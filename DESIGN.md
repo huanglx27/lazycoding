@@ -1,23 +1,40 @@
 # lazycoding – Architecture & Design
 
-## Overview
+## Motivation
 
-lazycoding is a local gateway that bridges Telegram chats to the `claude` CLI.
-Each Telegram chat (private, group, or channel) maps to one Claude *working
-directory*, i.e. one project.  A single bot process manages multiple projects
-simultaneously.
+Claude Code is a powerful agentic coding tool, but it's bound to a terminal on your development machine. The moment you step away from your desk, you lose access.
+
+lazycoding removes that constraint. It is a **local gateway process** that exposes Claude Code to any Telegram conversation. The design follows three principles:
+
+1. **Locality** — Claude Code runs on *your* machine with full access to *your* filesystem. No cloud intermediary touches your source code.
+2. **Multiplexing** — one bot process serves many projects. Each Telegram conversation maps to one project directory; conversations are fully isolated from each other.
+3. **Extensibility** — every major boundary (chat platform, AI backend, session store, speech-to-text) is abstracted behind an interface, making it straightforward to swap implementations or add new ones.
+
+---
+
+## System Overview
 
 ```
-Telegram (phone/desktop)
-        │  send message / voice / file
-        ▼
-  lazycoding  (runs locally)
-        │  spawn subprocess
-        ▼
-  claude CLI  (--dangerously-skip-permissions)
-        │  reads/writes files, runs commands
-        ▼
-  stream-json output  →  throttled edit-in-place back to Telegram
+┌─────────────────────────────────────────────────────────────┐
+│                     Developer's machine                      │
+│                                                             │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │                    lazycoding                         │  │
+│  │                                                      │  │
+│  │  ┌────────────┐   ┌───────────┐   ┌──────────────┐  │  │
+│  │  │  channel/  │   │lazycoding │   │    agent/    │  │  │
+│  │  │  telegram  │◄──│    core   │──►│    claude    │  │  │
+│  │  │  adapter   │   │(dispatch) │   │   runner     │  │  │
+│  │  └────────────┘   └───────────┘   └──────────────┘  │  │
+│  │        │               │                  │           │  │
+│  │   InboundEvent    session.Store      subprocess       │  │
+│  │   MessageHandle   FileStore          stream-json      │  │
+│  └──────────────────────────────────────────────────────┘  │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+         ▲                                     ▼
+    Telegram API                          Project files
+  (polling over HTTPS)                  /path/to/project/
 ```
 
 ---
@@ -26,194 +43,247 @@ Telegram (phone/desktop)
 
 ```
 cmd/lazycoding/
-  main.go                     entry point: wire deps, graceful shutdown
+  main.go                   entry point: wire dependencies, graceful shutdown
 
 internal/
   config/
-    config.go                 Config structs, YAML loading, defaults,
-                              WorkDirFor / ExtraFlagsFor helpers
+    config.go               Config structs, YAML loading, defaults
+                            WorkDirFor / ExtraFlagsFor resolution helpers
 
   agent/
-    agent.go                  Agent interface, StreamRequest, Event types
+    agent.go                Agent interface, StreamRequest, Event types
     claude/
-      runner.go               spawn claude subprocess, set WorkDir
-      parser.go               stream-json JSONL → []agent.Event
+      runner.go             spawn claude subprocess with correct WorkDir
+      parser.go             stream-json JSONL → []agent.Event
 
   session/
-    store.go                  Store interface + MemoryStore
+    store.go                Store interface, MemoryStore, FileStore (JSON-backed)
 
   channel/
-    channel.go                Channel interface, InboundEvent, MessageHandle
+    channel.go              Channel interface, InboundEvent, MessageHandle,
+                            KeyboardButton (for inline keyboards)
     telegram/
-      adapter.go              Telegram implementation: polling, voice,
-                              document/photo upload, SendDocument
-      renderer.go             Split / Truncate for 4096-char limit
+      adapter.go            Telegram polling, voice/document/photo handling,
+                            inline keyboard send/answer, SendDocument
+      renderer.go           Markdown→HTML conversion, table rendering,
+                            UTF-8-safe Split / Truncate
 
   transcribe/
-    transcribe.go             Transcriber interface, Config, New() factory
-    groq.go                   Groq cloud API backend
-    whisper_cpp.go            whisper.cpp CLI backend
-    whisper_py.go             openai-whisper Python CLI backend
-    whisper_cgo.go            whisper.cpp CGo backend  (build tag: whisper)
-    whisper_cgo_stub.go       stub for non-whisper builds
+    transcribe.go           Transcriber interface, Config, New() factory
+    groq.go                 Groq cloud Whisper API
+    whisper_cpp.go          whisper.cpp CLI subprocess + ffmpeg conversion
+    whisper_py.go           openai-whisper Python CLI subprocess
+    whisper_cgo.go          whisper.cpp CGo bindings  (build tag: whisper)
+    whisper_cgo_stub.go     no-op stub for standard builds
 
   lazycoding/
-    lazycoding.go             orchestration: dispatch, consumeStream,
-                              handleCommand, handleDownload, safeJoin
+    lazycoding.go           orchestration: dispatch, queue, consumeStream,
+                            handleCommand, handleCallback, handleDownload
+    convlog.go              human-readable conversation transcript (verbose mode)
 
-config.yaml                   annotated configuration template
-DESIGN.md                     this file
-README.md                     user-facing setup guide
+config.example.yaml         annotated configuration template
 ```
 
 ---
 
 ## Key Interfaces
 
-### `channel.Channel`  (platform abstraction)
+### `channel.Channel` — platform abstraction
 
 ```go
-Events(ctx)                              → <-chan InboundEvent
-SendText(ctx, conversationID, text)      → (MessageHandle, error)
-UpdateText(ctx, handle, text)            → error
-SendTyping(ctx, conversationID)          → error
-SendDocument(ctx, conversationID, path,
-             caption)                    → error
+type Channel interface {
+    Events(ctx context.Context) <-chan InboundEvent
+    SendText(ctx, conversationID, text string) (MessageHandle, error)
+    UpdateText(ctx context.Context, handle MessageHandle, text string) error
+    SendTyping(ctx context.Context, conversationID string) error
+    SendKeyboard(ctx, conversationID, text string,
+                 buttons [][]KeyboardButton) (MessageHandle, error)
+    AnswerCallback(ctx context.Context, callbackID, notification string) error
+    SendDocument(ctx, conversationID, filePath, caption string) error
+}
 ```
 
-`InboundEvent` fields:
+`InboundEvent` carries all inbound traffic (text, voice, files, commands, inline button presses) in a single unified struct:
 
-| Field            | Description                                          |
-|------------------|------------------------------------------------------|
-| `UserKey`        | `"tg:{userID}"` — who sent the message               |
-| `ConversationID` | Telegram chat ID string — which chat                 |
-| `Text`           | message text; for voice: the transcription           |
-| `IsCommand`      | true when the message starts with `/`                |
-| `Command`        | command name without `/`, e.g. `"reset"`             |
-| `CommandArgs`    | text after the command                               |
-| `IsVoice`        | true when text was transcribed from a voice message  |
+| Field            | Description |
+|------------------|-------------|
+| `UserKey`        | `"tg:{userID}"` — sender identity |
+| `ConversationID` | Telegram chat ID string — which project context to use |
+| `Text`           | message text; for voice messages: the transcription |
+| `IsCommand`      | true when the message starts with `/` |
+| `Command`        | command name without `/`, e.g. `"reset"` |
+| `CommandArgs`    | text after the command name |
+| `IsVoice`        | true when text was obtained via speech-to-text |
+| `IsCallback`     | true for inline keyboard button presses |
+| `CallbackID`     | must be acknowledged with `AnswerCallback` |
+| `CallbackData`   | application-defined payload (e.g. `"cancel"`, `"yes"`) |
 
-### `agent.Agent`  (AI backend abstraction)
+`MessageHandle.Seal()` marks a message as final, preventing further edits (used after streaming completes or the task is cancelled).
+
+---
+
+### `agent.Agent` — AI backend abstraction
 
 ```go
-Stream(ctx, StreamRequest) → (<-chan Event, error)
+type Agent interface {
+    Stream(ctx context.Context, req StreamRequest) (<-chan Event, error)
+}
 ```
 
 `StreamRequest`:
 
-| Field        | Meaning                                              |
-|--------------|------------------------------------------------------|
-| `Prompt`     | user text                                            |
-| `SessionID`  | resume a Claude session; empty = new session         |
-| `WorkDir`    | claude working directory; empty = runner default     |
-| `ExtraFlags` | additional CLI flags; nil = use runner default       |
+| Field        | Description |
+|--------------|-------------|
+| `Prompt`     | user instruction |
+| `SessionID`  | resumes an existing Claude session; empty = new session |
+| `WorkDir`    | Claude's working directory |
+| `ExtraFlags` | additional CLI flags (e.g. `--model claude-opus-4-6`) |
 
-`Event.Kind` values: `EventKindInit`, `EventKindText`, `EventKindToolUse`,
-`EventKindResult`, `EventKindError`.
+`Event.Kind` values:
 
-### `session.Store`  (persistence abstraction)
-
-```go
-Get(key string)    → (Session, bool)
-Set(key string, s Session)
-Delete(key string)
-```
-
-### `transcribe.Transcriber`  (speech-to-text abstraction)
-
-```go
-Transcribe(ctx, audioPath string) → (string, error)
-```
+| Kind | Payload | When emitted |
+|------|---------|--------------|
+| `EventKindInit` | `SessionID` | First event; provides the session ID for the current run |
+| `EventKindText` | `Text` | Incremental Claude text output |
+| `EventKindToolUse` | `ToolName`, `ToolInput`, `ToolUseID` | Claude invoked a tool |
+| `EventKindToolResult` | `ToolUseID`, `ToolResult` | Tool returned a result |
+| `EventKindResult` | `SessionID`, `Text` | Final event; session ID may be updated |
+| `EventKindError` | `Err` | Non-recoverable error (timeout, crash, etc.) |
 
 ---
 
-## Per-Channel Project Mapping
+### `session.Store` — persistence abstraction
 
-### Session key = `ConversationID`
+```go
+type Store interface {
+    Get(key string) (Session, bool)
+    Set(key string, s Session)
+    Delete(key string)
+}
+```
 
-Both the session store and the request-serialisation map are keyed by the
-**Telegram chat ID** (not the user ID).  Rationale:
+Two implementations:
+- **`MemoryStore`** — in-process, lost on restart (kept for testing/embedding)
+- **`FileStore`** — JSON-backed, persists to `~/.lazycoding/sessions.json`; survives restarts
 
-- Each chat is configured to point at one project directory.
-- All participants of a group share the same Claude context.
-- Private chats are naturally isolated.
+The production entry point (`cmd/lazycoding/main.go`) always uses `FileStore`.
+
+---
+
+### `transcribe.Transcriber` — speech-to-text abstraction
+
+```go
+type Transcriber interface {
+    Transcribe(ctx context.Context, audioPath string) (string, error)
+}
+```
+
+Four backends, selectable via config with no code changes. See [Voice input pipeline](#voice-input-pipeline) below.
+
+---
+
+## Per-Conversation Project Mapping
+
+The session store and request-serialisation map are both keyed by **`ConversationID`** (the Telegram chat ID string), not by user ID. Rationale:
+
+- Each chat is configured to point at exactly one project directory.
+- All members of a group share the same Claude session and see each other's progress.
+- Private chats are naturally isolated from one another.
 
 ### Config resolution (waterfall)
 
 ```
-channels["<chatID>"].work_dir     ← highest priority
-claude.work_dir                   ← global default
-(lazycoding launch directory)            ← ultimate fallback
+channels["<chatID>"].work_dir    ← highest priority
+channels["<chatID>"].extra_flags
+        ↓
+claude.work_dir                  ← global default
+claude.extra_flags
+        ↓
+(lazycoding launch directory)    ← ultimate fallback
 ```
-
-Same waterfall applies to `extra_flags`.
-
-### Example
-
-```yaml
-channels:
-  "123456789":          # private chat → Project A
-    work_dir: "/projects/project-a"
-
-  "-1001234567890":     # group chat → Project B
-    work_dir: "/projects/project-b"
-    extra_flags: ["--model", "claude-opus-4-6"]
-```
-
-chat_id signs: private chats are positive; groups/channels are negative
-(usually prefixed with `-100`).  Use `/workdir` in any chat to confirm.
 
 ---
 
 ## Request Lifecycle
 
 ```
-Telegram update
-  └─ Adapter.toEvent()            [per-update goroutine]
-       ├─ command?  → base.IsCommand = true
-       ├─ voice?    → downloadFile → Transcribe → base.IsVoice = true
-       ├─ document? → downloadFile → workDir/filename
-       ├─ photo?    → downloadFile → workDir/photo_*.jpg
-       └─ text?     → base.Text
+Telegram update arrives
+  └─ Adapter.toEvent()            [per-update goroutine — non-blocking]
+       ├─ command? → IsCommand = true
+       ├─ voice?   → downloadFile → Transcribe(ctx, oggPath) → IsVoice = true
+       ├─ document? → downloadFile → work_dir/filename
+       ├─ photo?   → downloadFile → work_dir/photo_*.jpg
+       └─ text?    → Text = msg.Text
             │
-            ▼ sent to out channel
-  lazycoding.Run() [event-loop goroutine]
-       ├─ IsCommand → go handleCommand()   (fast, no Claude)
-       └─ else      → dispatch(ev)
-                          ├─ cancel previous request for convID (SIGKILL)
-                          ├─ <-old.done  (μs, OS reaps child)
-                          └─ go handleMessage(ctx, ev)
-                                  ├─ WorkDirFor / ExtraFlagsFor
-                                  ├─ store.Get(convID)  → sessionID
-                                  ├─ ag.Stream(ctx, req)  → subprocess
-                                  ├─ SendText("_(thinking…)_") → handle
-                                  └─ consumeStream()
-                                        ├─ EventKindText    → throttled UpdateText
-                                        ├─ EventKindToolUse → new status message
-                                        ├─ EventKindResult  → final flush + Seal
-                                        └─ store.Set(convID, {newSessionID})
+            ▼ → buffered channel (size 16)
+  lazycoding.Run()                [single event-loop goroutine]
+       ├─ IsCallback → go handleCallback()   ← inline button press
+       ├─ IsCommand  → go handleCommand()    ← fast, no Claude subprocess
+       └─ else       → dispatch(ev)
+                           │
+                           ├─ Claude already running for this convID?
+                           │      YES → append ev to queue; return
+                           │      NO  → startRequest(convID, ev)
+                           │
+                           └─ startRequest()
+                                  ├─ ctx, cancel = context.WithTimeout(900s)
+                                  ├─ pending[convID] = {cancel, done, queue}
+                                  └─ go handleMessage(ctx, ev)
+                                          ├─ WorkDirFor / ExtraFlagsFor
+                                          ├─ store.Get(convID) → sessionID
+                                          ├─ ag.Stream(ctx, req) → events chan
+                                          ├─ SendKeyboard("⏳ thinking…",
+                                          │    [[✕ Cancel]]) → handle
+                                          └─ consumeStream(handle, events)
+                                                  ├─ EventKindText    → throttled UpdateText
+                                                  ├─ EventKindToolUse → update placeholder
+                                                  ├─ EventKindToolResult → show output
+                                                  ├─ EventKindResult  → final flush + Seal
+                                                  └─ EventKindError   → Seal + send error msg
+                                                       │
+                                                       ▼ goroutine exits
+                                               dequeue: if queue non-empty
+                                                   → startRequest(convID, queue[0])
 ```
 
 ---
 
 ## Streaming Update Strategy
 
-| Event              | Action                                                        |
-|--------------------|---------------------------------------------------------------|
-| `EventKindInit`    | capture session ID                                            |
-| `EventKindText`    | append to builder; `UpdateText` if ≥ `edit_throttle_ms`      |
-| `EventKindToolUse` | send new `_Running: Tool: input_` status message             |
-| `EventKindResult`  | final `UpdateText` + `Seal`; update tool handles → `_done_`  |
-| `EventKindError`   | send `⚠️ Error:` message; seal handle if partial text exists  |
+The core UX challenge is mapping a streaming terminal session to a chat message. lazycoding uses **edit-in-place** with throttling:
 
-`edit_throttle_ms` (default 2000 ms) avoids Telegram's ~20 edits/min limit.
-Messages > 4096 bytes are split (`Send` new chunk) or truncated (`UpdateText`).
+```
+1. Send placeholder message:  "⏳ thinking…"  [✕ Cancel]
+2. As events arrive:
+   ├─ Tool calls  → update placeholder with tool name + truncated input
+   │               show output snippet when tool returns
+   └─ Text chunks → accumulate in strings.Builder
+                    UpdateText every edit_throttle_ms (default 1000 ms)
+3. On EventKindResult:
+   └─ Final UpdateText with full Markdown→HTML rendered response
+      Seal the handle (no further edits)
+4. If response ends with "?":
+   └─ SendKeyboard with [✅ Yes] [❌ No] quick-reply buttons
+```
+
+| Event | Action |
+|-------|--------|
+| `EventKindInit` | Capture session ID |
+| `EventKindText` | Append to buffer; `UpdateText` if throttle elapsed |
+| `EventKindToolUse` | Replace placeholder with tool name + input |
+| `EventKindToolResult` | Append truncated output under tool entry |
+| `EventKindResult` | Final flush, `Seal`, optional quick-reply keyboard |
+| `EventKindError` | `Seal` + send `⚠️ Error:` message |
+
+**Message size limits:** Telegram caps messages at 4096 bytes. `Split` breaks large responses into multiple messages; `UpdateText` uses `Truncate`. Both functions respect UTF-8 rune boundaries (never cut a multi-byte character in half).
+
+**HTML rendering:** All text from Claude is passed through `MarkdownToTelegramHTML`, which converts fenced code blocks, tables (Unicode box-drawing), headers, bold/italic/strikethrough, inline code, blockquotes, links, and bullet lists into Telegram's HTML parse mode. Raw HTML entities are escaped using only the four named entities Telegram accepts (`&amp;` `&lt;` `&gt;` `&quot;`).
 
 ---
 
-## claude CLI Invocation
+## Claude CLI Invocation
 
-```
+```sh
 claude \
   --print \
   --output-format stream-json \
@@ -223,43 +293,47 @@ claude \
   "<prompt>"
 ```
 
-- `stream-json` emits one JSON object per line.
-- `ParseLineMulti` converts each line to zero or more `agent.Event` values,
-  handling multi-block assistant messages (e.g. text + tool_use).
-- `exec.CommandContext` guarantees SIGKILL when context is cancelled.
-- stderr is captured; non-empty stderr is appended to the error message.
-- Scanner buffer is 4 MB to handle large tool outputs.
+- `stream-json` emits one JSON object per line on stdout.
+- `parser.ParseLineMulti` converts each line to zero or more `agent.Event` values, handling multi-block assistant turns (text + tool_use in a single assistant message).
+- `exec.CommandContext` guarantees SIGKILL when the context is cancelled (timeout or `/cancel`).
+- stderr is captured; non-empty stderr is appended to the error message surfaced to the user.
+- Scanner buffer is 4 MB to handle large tool outputs without truncation at the parser layer.
 
 ---
 
 ## Voice Input Pipeline
 
 ```
-Telegram voice update (OGG/OPUS)
-  └─ Adapter.handleVoice()
-       ├─ downloadFile(voice.FileID) → /tmp/lc-voice-*.ogg
+Telegram sends OGG/OPUS voice message
+  └─ handleVoice()
+       ├─ downloadFile(fileID) → /tmp/lc-voice-<nano>.ogg
        └─ transcriber.Transcribe(ctx, oggPath) → text
             │
-            ├─ backend="groq"           → HTTP multipart POST to Groq API
-            ├─ backend="whisper-native" → ffmpeg OGG→WAV → whisper.cpp CGo
-            ├─ backend="whisper-cpp"    → [ffmpeg OGG→WAV] → whisper-cli subprocess
-            └─ backend="whisper"        → whisper Python subprocess
+            ├─ backend="groq"
+            │    └─ multipart POST to api.groq.com/v1/audio/transcriptions
+            │       (OGG accepted natively; no conversion needed)
+            │
+            ├─ backend="whisper-native"
+            │    └─ ffmpeg OGG→16kHz mono WAV
+            │       → whisper.cpp CGo bindings → []float32 samples → text
+            │       (model auto-downloaded from HuggingFace on first use)
+            │
+            ├─ backend="whisper-cpp"
+            │    └─ [ffmpeg OGG→WAV if available]
+            │       → exec whisper-cli subprocess → parse .txt output
+            │
+            └─ backend="whisper"
+                 └─ exec whisper Python subprocess → parse .txt output
 ```
 
-The transcribed text becomes `InboundEvent.Text` with `IsVoice=true`.  The lazycoding
-layer echoes it back (`🎤 识别文字：…`) before forwarding to Claude.
+The transcribed text becomes `InboundEvent.Text` with `IsVoice=true`. The orchestration layer echoes it back (`🎤 Transcribed: …`) before forwarding to Claude, letting the user confirm what was recognised.
 
-### Transcription Backends
-
-| Backend           | Install                        | OGG support | Notes                         |
-|-------------------|--------------------------------|-------------|-------------------------------|
-| `groq`            | none (API key only)            | native      | Recommended; free 28800 s/day |
-| `whisper-native`  | `brew install whisper-cpp`     | via ffmpeg  | CGo; model auto-downloaded    |
-| `whisper-cpp`     | `brew install whisper-cpp`     | via ffmpeg  | CLI subprocess                |
-| `whisper`         | `pip install openai-whisper`   | native      | Python subprocess             |
-
-`whisper-native` requires `go build -tags whisper`; all others use the
-standard `go build`.
+| Backend | Install | OGG support | Notes |
+|---------|---------|-------------|-------|
+| `groq` | API key only | native | Recommended; 28,800 s/day free |
+| `whisper-native` | `brew install whisper-cpp` | via ffmpeg | CGo; `-tags whisper` build required |
+| `whisper-cpp` | `brew install whisper-cpp` | via ffmpeg | CLI subprocess |
+| `whisper` | `pip install openai-whisper` | native | Python subprocess |
 
 ---
 
@@ -267,82 +341,143 @@ standard `go build`.
 
 ```
 Telegram document / photo update
-  └─ handleDocument / handlePhoto
+  └─ handleDocument() / handlePhoto()
        ├─ workDir = cfg.WorkDirFor(convID)
+       ├─ sanitizeFilename() — strip directory components (path traversal prevention)
        ├─ downloadFile(fileID) → workDir/<filename>
-       └─ InboundEvent{Text: "[文件已保存: <name>]\n<caption>"}
+       └─ InboundEvent{Text: "[File saved to work directory: <name>]\n<caption>"}
 ```
 
-- Document filename is sanitised (`filepath.Base`, strip leading dots).
-- Photo is named `photo_YYYYMMDD_HHMMSS.jpg` (largest resolution chosen).
-- The event text tells Claude where the file landed.
+The event text is the prompt sent to Claude — it tells Claude exactly where the file landed so it can act on it without any additional instruction.
 
 ---
 
-## File Download (`/download`)
+## File Download Pipeline
 
 ```
 /download src/main.go
-  └─ safeJoin(workDir, "src/main.go") → absolute path
-       ├─ path traversal check (must stay inside workDir)
+  └─ safeJoin(workDir, "src/main.go")
+       ├─ filepath.Clean(filepath.Join(workDir, rel))
+       ├─ verify result has workDir as prefix (rejects ../../ traversal)
        └─ ch.SendDocument(ctx, convID, absPath, rel)
 ```
-
-`safeJoin` uses `filepath.Clean` + `strings.HasPrefix` to prevent
-`../../etc/passwd`-style traversal.
 
 ---
 
 ## Concurrency Model
 
 ```
-1 polling goroutine  (Adapter.Events)
-  per-update goroutines  (file download / transcription, non-blocking)
-    → buffered channel (size 16) → lazycoding.Run()
+┌─ 1 polling goroutine (Adapter.Events loop) ─────────────────────┐
+│   per-update goroutines (download + transcribe — non-blocking)  │
+│   → buffered channel (size 16)                                  │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─ 1 event-loop goroutine (lazycoding.Run) ────────────────────────┐
+│   reads Events() sequentially                                   │
+│   callbacks  → go handleCallback()   (fast)                     │
+│   commands   → go handleCommand()    (fast)                     │
+│   messages   → dispatch()                                       │
+│     ├─ busy? → append to queue (pendingState.queue, guarded by  │
+│     │          pendingState.mu)                                  │
+│     └─ idle? → startRequest() → go handleMessage()             │
+│                  ├─ context.WithTimeout                         │
+│                  └─ on exit: dequeue next item if any           │
+└─────────────────────────────────────────────────────────────────┘
 
-1 event-loop goroutine  (lazycoding.Run)
-  reads Events() sequentially
-  commands → go handleCommand()  (fast, no Claude)
-  messages → dispatch()          (may block ~μs for subprocess death)
-    → go handleMessage()  (at most 1 per active conversation)
-
-pending map[convID → {cancel, done}]  guarded by pendingMu
+pending  map[convID → *pendingState]  guarded by pendingMu (outer lock)
+pendingState.queue                    guarded by pendingState.mu (inner lock)
 ```
 
-Invariant: at most **one** Claude subprocess runs per conversation at any time.
+**Invariants:**
+- At most **one** Claude subprocess runs per conversation at any time.
+- Messages are never dropped; they queue until Claude is ready.
+- `cancelConversation()` cancels the subprocess *and* drains the queue atomically.
+- All locks are short-held (no I/O inside critical sections).
 
 ---
 
-## Commands
+## Interactive Features
 
-| Command               | Handler           | Notes                              |
-|-----------------------|-------------------|------------------------------------|
-| `/start`              | `handleCommand`   | welcome + current work_dir         |
-| `/reset`              | `handleCommand`   | delete session + cancel in-flight  |
-| `/session`            | `handleCommand`   | show Claude session ID             |
-| `/workdir`            | `handleCommand`   | show active work_dir               |
-| `/download <path>`    | `handleDownload`  | send file from work_dir to chat    |
-| `/help`               | `handleCommand`   | command list                       |
+### Inline Cancel Button
+
+The initial placeholder message includes an inline keyboard with a **[✕ Cancel]** button. When clicked:
+1. Telegram sends a `CallbackQuery` update.
+2. `handleCallback()` calls `AnswerCallback` (removes Telegram's loading spinner).
+3. `cancelConversation(convID)` cancels the Claude subprocess context and drains the queue.
+4. A "⏹ Cancelled." message is sent.
+
+The `hasKeyboard` flag on `tgHandle` ensures the button is removed the first time `UpdateText` is called (real content replaces the placeholder).
+
+### Quick-Reply Buttons
+
+After `consumeStream` returns, `detectQuickReplies(finalText)` inspects the last non-empty line. If it ends with `?`, a `[✅ Yes]` / `[❌ No]` keyboard is sent as a separate message. Clicking a button dispatches the button's `Data` string (`"yes"` or `"no"`) as a new text message, which joins the queue and is processed normally.
 
 ---
 
-## Adding a New Chat
+## Session Persistence
 
-1. Add the bot to the target chat.
-2. Send `/workdir` — bot replies with current directory; terminal log shows
-   `conversation=<chatID>`.
-3. Add to `config.yaml`:
+```
+Session{
+    ClaudeSessionID string    // passed as --resume <id> to claude CLI
+    LastUsed        time.Time
+}
+```
+
+`FileStore` serialises the session map to `~/.lazycoding/sessions.json` on every `Set` or `Delete` call (write-through). On startup, `NewFileStore` reads the file back; a corrupt or missing file starts with an empty map (no crash).
+
+This means:
+- **Restart lazycoding** → sessions reload → Claude context is preserved.
+- **`/reset`** → `store.Delete(convID)` → Claude starts a fresh session.
+- **Session file manually deleted** → all conversations start fresh (no harm done).
+
+---
+
+## Adding a New Conversation
+
+1. Add the bot to the target Telegram chat.
+2. Send `/workdir` — the terminal log shows `conversation=<chatID>`.
+3. Edit `config.yaml`:
    ```yaml
    channels:
      "<chatID>":
        work_dir: "/path/to/project"
    ```
-4. Restart: `./lazycoding config.yaml`.  No code changes required.
+4. Restart lazycoding. No code changes required.
 
 ---
 
 ## Extending to Other Platforms
 
-Implement `channel.Channel` for Slack, Discord, etc.  The bot core, agent
-layer, session store, and transcription layer are all platform-agnostic.
-Wire the new adapter in `cmd/lazycoding/main.go`.
+Implement `channel.Channel` for Slack, Discord, or any other messaging platform. The core orchestration layer, agent runner, session store, and transcription layer are all platform-agnostic. Wire the new adapter in `cmd/lazycoding/main.go`.
+
+```go
+// Example: swap Telegram for a hypothetical Slack adapter
+slackCh, _ := slack.New(cfg)
+b := lazycoding.New(slackCh, runner, store, cfg)
+b.Run(ctx)
+```
+
+---
+
+## Design Decisions and Trade-offs
+
+### `--print` batch mode vs PTY
+
+Claude Code has an interactive PTY mode and a `--print` batch mode. lazycoding uses `--print --output-format stream-json` because:
+
+- **Structured output** — `stream-json` emits machine-readable events (text, tool_use, tool_result, result) that can be parsed and rendered selectively.
+- **Clean subprocess management** — `exec.CommandContext` with SIGKILL on cancel is reliable; PTY lifecycle is more complex.
+- **Message queuing** — `--print` processes one request at a time, which pairs naturally with a per-conversation FIFO queue.
+
+The trade-off: Claude cannot ask interactive clarifying questions mid-task. The quick-reply button feature partially compensates for this at the chat layer.
+
+### Edit-in-place vs new messages
+
+Telegram supports editing existing messages within a ~48-hour window. Edit-in-place keeps the conversation thread clean (one message per Claude turn) and provides a natural "streaming" feel on mobile. The throttle (`edit_throttle_ms`, default 1000 ms) prevents 429 rate-limit errors.
+
+For large responses (> 4096 bytes), the first chunk is sent as the main message and additional chunks are sent as follow-up messages.
+
+### Session key = ConversationID, not UserID
+
+Keying by chat ID means all members of a group share one Claude session for their project. This is intentional — it mirrors how a team shares a codebase. If per-user isolation were needed (e.g., each developer works on their own branch), the key could be changed to `UserKey` with minimal code changes.

@@ -1,27 +1,51 @@
 # lazycoding 🛋️
 
-> Code from anywhere — control a local Claude Code instance through Telegram, across multiple projects at once.
+**Control a local Claude Code session from your phone, over Telegram.**
 
-lazycoding is a gateway process that runs on your machine: it forwards Telegram messages (text / voice / files) to the local `claude` CLI and streams the output back to your chat in real time. Each Telegram conversation (DM / group / channel) can be bound to a separate project directory, so a single bot process serves multiple projects simultaneously.
+Write code, fix bugs, and manage multiple projects — all by sending a message. lazycoding runs on your machine, bridges Telegram to the `claude` CLI, and streams every tool call and response back to your chat in real time.
 
 ```
-Telegram (mobile)
-     │  text / voice / file
-     ▼
-lazycoding  (runs on your machine)
-     │  spawns subprocess
-     ▼
-claude CLI  (--dangerously-skip-permissions)
-     │  reads/writes files, runs commands
-     ▼
-streaming output → Telegram
+You (anywhere, any device)
+        │  "refactor the auth module and add tests"
+        ▼
+   Telegram
+        │
+        ▼
+   lazycoding  ← runs on your dev machine
+        │  claude --print --output-format stream-json
+        ▼
+   Claude Code  ← reads files, runs commands, writes code
+        │
+        ▼
+   Streaming output → back to your Telegram chat
 ```
+
+---
+
+## Why lazycoding?
+
+**Claude Code is powerful but tied to a terminal.** lazycoding removes that constraint.
+
+| Without lazycoding | With lazycoding |
+|--------------------|-----------------|
+| Must be at your computer | Works from your phone, tablet, or any Telegram client |
+| One project per session | One bot serves multiple projects simultaneously |
+| Manual session management | Sessions persist across restarts; context is never lost |
+| No voice input | Dictate tasks hands-free |
+| Files stay local | Send/receive files directly in chat |
+
+**Ideal for:**
+- Reviewing a PR on your phone and having Claude apply the fixes
+- Dictating a feature spec during a commute and watching Claude implement it
+- Sharing a Claude-powered coding assistant with your team over a group chat
+- Running long tasks in the background and getting notified when they complete
 
 ---
 
 ## Table of contents
 
 - [Prerequisites](#prerequisites)
+- [Quick start](#quick-start)
 - [Build](#build)
 - [Step 1 – Create a Telegram bot](#step-1--create-a-telegram-bot)
 - [Step 2 – Basic configuration](#step-2--basic-configuration)
@@ -42,9 +66,9 @@ streaming output → Telegram
 
 | Dependency | Notes |
 |------------|-------|
-| Go 1.21+ | Build only; no Go runtime needed to run the binary |
-| `claude` CLI | Must be logged in; `claude --version` should work |
-| Telegram Bot Token | Obtain from @BotFather |
+| Go 1.21+ | Build only; the compiled binary has no runtime dependencies |
+| `claude` CLI | Must be logged in — `claude --version` should work |
+| Telegram Bot Token | Obtain from @BotFather (free, takes 2 minutes) |
 
 Verify the Claude CLI works:
 
@@ -55,32 +79,56 @@ claude --print "hello" --output-format stream-json --dangerously-skip-permission
 
 ---
 
+## Quick start
+
+```bash
+# 1. Clone and build
+git clone https://github.com/bishenghua/lazycoding.git
+cd lazycoding
+make build
+
+# 2. Create your config
+cp config.example.yaml config.yaml
+# Edit config.yaml: set telegram.token, allowed_user_ids, and claude.work_dir
+
+# 3. Run
+./lazycoding config.yaml
+
+# 4. Open Telegram, send your bot a message — Claude starts working
+```
+
+---
+
 ## Build
 
 ```bash
-git clone https://github.com/bishenghua/lazycoding.git
-cd lazycoding
-
 # Standard build (recommended)
 go build -o lazycoding ./cmd/lazycoding/
 
 # With embedded whisper.cpp voice recognition (requires brew install whisper-cpp)
 go build -tags whisper -o lazycoding ./cmd/lazycoding/
 
-# Or use Make
-make build
-make build-whisper
-make release   # cross-compile for all platforms → dist/
+# Cross-compile for all platforms → dist/
+make release
+```
+
+Available `make` targets:
+
+```
+make build          build for current platform
+make build-whisper  build with CGo whisper voice recognition
+make test           run tests
+make release        cross-compile: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64
+make clean          remove build artefacts
 ```
 
 ---
 
 ## Step 1 – Create a Telegram bot
 
-1. Open Telegram and search for **@BotFather**
-2. Send `/newbot` and follow the prompts
-3. BotFather replies with a token like `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`
-4. Copy the token into `config.yaml` → `telegram.token`
+1. Open Telegram → search **@BotFather** → send `/newbot`
+2. Follow the prompts; BotFather gives you a token like `1234567890:ABCdef…`
+3. Copy the token into `config.yaml` → `telegram.token`
 
 ---
 
@@ -88,15 +136,16 @@ make release   # cross-compile for all platforms → dist/
 
 ```bash
 cp config.example.yaml config.yaml
+# Edit config.yaml
 ```
 
-Minimal working config:
+Minimum working config:
 
 ```yaml
 telegram:
   token: "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
   allowed_user_ids:
-    - 123456789   # your user_id (see below)
+    - 123456789   # your Telegram user_id
 
 claude:
   work_dir: "/Users/yourname/projects/my-project"
@@ -107,30 +156,22 @@ log:
   level: "info"
 ```
 
-**How to find your user_id:** message **@userinfobot** on Telegram; the reply contains your `Id`.
+**Find your user\_id:** message **@userinfobot** on Telegram; the reply contains your `Id`.
 
 ---
 
 ## Step 3 – Find your chat\_id
 
-Each conversation has a unique `chat_id`, needed when mapping multiple projects.
+Each conversation has a unique `chat_id`, used when mapping multiple projects.
 
-### Using the /workdir command (recommended)
+### Using /workdir (recommended)
 
-1. Start the bot with the minimal config:
-   ```bash
-   ./lazycoding config.yaml
-   ```
-2. Send `/workdir` in the target conversation.
-3. The terminal log prints:
+1. Start the bot: `./lazycoding config.yaml`
+2. Send `/workdir` in the target conversation
+3. Read the conversation id from the terminal log:
    ```
    level=INFO msg="request started" conversation=-1001234567890 ...
    ```
-   `-1001234567890` is the `chat_id` for that conversation.
-
-### Alternative: @RawDataBot
-
-Add **@RawDataBot** to the target group and send any message. The reply includes `"chat": {"id": ...}`.
 
 ### chat\_id patterns
 
@@ -152,25 +193,19 @@ channels:
   "123456789":
     work_dir: "/Users/yourname/projects/personal"
 
-  # Group A → backend API project
+  # Team group → shared backend project
   "-1001234567890":
     work_dir: "/Users/yourname/projects/backend-api"
 
-  # Group B → important project with a stronger model
+  # Another group → different project, stronger model
   "-1009876543210":
-    work_dir: "/Users/yourname/projects/frontend"
+    work_dir: "/Users/yourname/projects/ml-research"
     extra_flags:
       - "--model"
       - "claude-opus-4-6"
 ```
 
-Conversations not listed under `channels` use `claude.work_dir`.
-
-**work\_dir resolution order (highest to lowest priority):**
-
-```
-channels.<chat_id>.work_dir  →  claude.work_dir  →  lazycoding launch directory
-```
+Unmapped conversations fall back to `claude.work_dir`.
 
 ---
 
@@ -180,10 +215,10 @@ channels.<chat_id>.work_dir  →  claude.work_dir  →  lazycoding launch direct
 ./lazycoding config.yaml
 ```
 
-Recommended for long-running use:
+For persistent background operation:
 
 ```bash
-# tmux
+# tmux (recommended for development)
 tmux new -s lazycoding
 ./lazycoding config.yaml
 
@@ -191,12 +226,12 @@ tmux new -s lazycoding
 nohup ./lazycoding config.yaml >> lazycoding.log 2>&1 &
 ```
 
-**systemd service (Linux):**
+**systemd service (Linux production):**
 
 ```ini
 # /etc/systemd/system/lazycoding.service
 [Unit]
-Description=lazycoding Telegram Bot
+Description=lazycoding Telegram–Claude gateway
 After=network.target
 
 [Service]
@@ -222,12 +257,12 @@ journalctl -fu lazycoding
 | Command | Description |
 |---------|-------------|
 | `/start` | Welcome message + current work directory |
-| `/workdir` | Show the work directory for this conversation (also reveals the chat\_id) |
+| `/workdir` | Show the work directory bound to this conversation (also shows chat\_id) |
 | `/session` | Show the current Claude session ID (for debugging) |
-| `/cancel` | Stop the current task, **keep session history** (conversation can continue) |
-| `/reset` | Stop the current task + **clear session history**, start fresh |
+| `/cancel` | Stop the current task — **session history is kept** |
+| `/reset` | Stop current task + **clear session history**, start fresh |
 | `/download <path>` | Download a file from the work directory to Telegram |
-| `/help` | Show the command list |
+| `/help` | Show command reference |
 
 ---
 
@@ -235,77 +270,75 @@ journalctl -fu lazycoding
 
 ### Inline cancel button
 
-When Claude starts processing a request, a **[✕ Cancel]** button appears on the placeholder message. Clicking it immediately stops the task (session history is kept; the queue is cleared too).
+Every response starts with a `⏳ thinking…` placeholder and a **[✕ Cancel]** button. Click it at any point to abort — session history is preserved, the message queue is cleared.
 
 ```
-Bot: ⏳ thinking…          [✕ Cancel]
-     ↓ click at any time
+Bot: ⏳ thinking…   [✕ Cancel]
+     ↓ click
 Bot: ⏹ Cancelled.
 ```
 
 ### Quick-reply buttons
 
-When Claude's response ends with a question, the bot automatically shows **[✅ Yes]** / **[❌ No]** buttons. Clicking one sends that reply instantly.
+When Claude's response ends with a question, **[✅ Yes]** / **[❌ No]** buttons appear automatically. One tap sends your reply.
 
 ```
 Bot: Should I also update the unit tests?
      [✅ Yes]  [❌ No]
 
-You: [click Yes]
-Bot: ⏳ thinking…  (updates the tests)
+You: [tap Yes]
+Bot: ⏳ thinking…
 ```
 
 ### Message queuing
 
-Messages sent while Claude is busy are queued and processed in order after the current task finishes — nothing is dropped or cancelled automatically.
+Messages sent while Claude is busy are queued — nothing is dropped, nothing is cancelled automatically. Claude works through them in order.
 
 ```
 You: Analyse this file
 Bot: ⏳ thinking…
 
-You: (while Claude is running) Also check the dependencies
-     → queued
+You: (Claude is still running) Also check the dependencies
+     → queued automatically
 
-Bot: Analysis complete: …
-Bot: ⏳ thinking…  (starts the queued message)
-Bot: Dependency report: …
+Bot: Analysis: …
+Bot: ⏳ thinking…   ← starts the queued request
+Bot: Dependencies: …
 ```
 
 ---
 
 ## Voice input
 
-Send a Telegram voice message; the bot transcribes it and forwards the text to Claude. Four backends are supported:
+Send a Telegram voice message; the bot transcribes it and forwards the text to Claude.
 
 | Option | Backend value | Prerequisite | Privacy |
 |--------|---------------|--------------|---------|
-| **A: Groq API** (recommended) | `groq` | Free API key | Audio uploaded to cloud |
-| B: whisper-native (CGo) | `whisper-native` | `brew install whisper-cpp` + `-tags whisper` build | Local |
+| **A: Groq API** (recommended) | `groq` | Free API key | Cloud |
+| B: whisper-native (CGo) | `whisper-native` | `brew install whisper-cpp` + `-tags whisper` | Local |
 | C: whisper.cpp CLI | `whisper-cpp` | `brew install whisper-cpp` | Local |
 | D: openai-whisper | `whisper` | `pip install openai-whisper` | Local |
 
 ### Option A: Groq API (recommended, zero install)
+
+Register at [console.groq.com](https://console.groq.com) → API Keys → Create key, then:
 
 ```yaml
 transcription:
   enabled: true
   backend: "groq"
   groq:
-    api_key: "gsk_your_key_here"   # console.groq.com → API Keys
+    api_key: "gsk_your_key_here"
     model: "whisper-large-v3-turbo"
-    language: "en"                  # leave empty for auto-detect
+    language: "en"   # leave empty for auto-detect
 ```
 
-Free tier: **28,800 seconds/day** (~8 hours of audio). Accepts OGG natively — no conversion needed.
+Free tier: **28,800 seconds/day** (~8 hours). Accepts OGG natively.
 
----
-
-### Option B: whisper-native (embedded CGo, no subprocess)
+### Option B: whisper-native (embedded, no subprocess)
 
 ```bash
-brew install whisper-cpp   # install libwhisper system library
-brew install ffmpeg         # OGG → WAV conversion (required)
-
+brew install whisper-cpp ffmpeg
 go build -tags whisper -o lazycoding ./cmd/lazycoding/
 ```
 
@@ -314,20 +347,15 @@ transcription:
   enabled: true
   backend: "whisper-native"
   whisper_native:
-    model: "base"    # model name (auto-downloaded) or absolute .ggml path
+    model: "base"   # auto-downloaded to ~/.cache/lazycoding/whisper/
     language: "en"
 ```
 
-On first run the model is downloaded automatically to `~/.cache/lazycoding/whisper/` (base ≈ 140 MB).
-
----
-
-### Option C: whisper.cpp CLI (fully local)
+### Option C: whisper.cpp CLI
 
 ```bash
 brew install whisper-cpp
 whisper-download-ggml-model base
-# model saved to /opt/homebrew/share/whisper-cpp/models/ggml-base.bin
 ```
 
 ```yaml
@@ -340,97 +368,52 @@ transcription:
     language: "en"
 ```
 
-If `ffmpeg` is installed (`brew install ffmpeg`), OGG files are converted to WAV automatically.
-
----
-
-### Option D: openai-whisper (Python)
-
-```bash
-pip install openai-whisper   # requires Python 3 and ffmpeg
-```
-
-```yaml
-transcription:
-  enabled: true
-  backend: "whisper"
-  whisper_py:
-    bin: "whisper"
-    model: "base"
-    language: "en"
-```
-
----
-
 ### Model reference
 
-| Model | Size | Speed | Use case |
+| Model | Size | Speed | Best for |
 |-------|------|-------|----------|
-| `tiny` | 75 MB | very fast | Short English phrases |
-| `base` | 140 MB | fast | **Good starting point** |
+| `tiny` | 75 MB | very fast | Short phrases, English |
+| `base` | 140 MB | fast | **Recommended starting point** |
 | `small` | 460 MB | medium | Technical terminology |
-| `medium` | 1.5 GB | slow | High accuracy required |
-| `large-v3-turbo` | 809 MB | medium | High accuracy + reasonable speed |
-
----
-
-### Voice example
-
-```
-You: [voice: "Add error handling to main.go"]
-
-Bot: 🎤 Transcribed: Add error handling to main.go
-     ⏳ thinking…
-     🔧 Read: main.go
-     🔧 Edit: main.go
-     Done. Added error handling on line 23 …
-```
+| `medium` | 1.5 GB | slow | High accuracy |
+| `large-v3-turbo` | 809 MB | medium | High accuracy + speed |
 
 ---
 
 ## File upload
 
-Send any file or photo directly to the Telegram conversation. The bot will:
-
-1. Download it to the conversation's **work directory**
-2. Tell Claude the file is ready so it can act on it immediately
-
-Supported: **any file type** (source code, PDFs, documents) and **photos** (screenshots, designs).
+Drop any file or photo into the Telegram conversation. lazycoding saves it to the project directory and tells Claude it's there.
 
 ```
 You: [upload requirements.txt]
-     caption: Write a Dockerfile based on these dependencies
+     caption: Write a Dockerfile for this
 
 Bot: 🔧 Read: requirements.txt
      Here is the Dockerfile: …
 ```
 
-- The caption is used as the Claude instruction; you can also upload without a caption and describe what you want in a follow-up message.
-- Photos are saved as `photo_YYYYMMDD_HHMMSS.jpg`.
-- Directory components in file names are stripped (path traversal prevention).
+- Caption becomes the Claude prompt; you can also upload silently and ask in a follow-up message
+- Photos → `photo_YYYYMMDD_HHMMSS.jpg`
+- Directory components in filenames are stripped (path traversal prevention)
 
 ---
 
 ## File download
 
-Send a file from the work directory back to Telegram:
+Retrieve any file from the project directory:
 
 ```
 /download src/main.go
-/download README.md
 /download dist/app.tar.gz
 ```
 
-Paths are relative to the conversation's work directory. Subdirectories are supported; you cannot escape the work directory.
+Paths are relative to the conversation's work directory.
 
 ```
-You: Write a data-processing script and save it as process.py
-
-Bot: 🔧 Write: process.py
-     Created process.py …
+You: Write a data-processing script, save as process.py
+Bot: Done, created process.py
 
 You: /download process.py
-
 Bot: [sends process.py]
 ```
 
@@ -438,7 +421,7 @@ Bot: [sends process.py]
 
 ## Advanced configuration
 
-### Shared bot (multiple users)
+### Multiple users sharing one bot
 
 ```yaml
 telegram:
@@ -448,7 +431,7 @@ telegram:
     - 333333333   # colleague B
 ```
 
-Leave `allowed_user_ids` empty to allow everyone. Only one Claude process runs per conversation at a time; new messages are queued until the current one finishes.
+Leave `allowed_user_ids` empty to allow everyone. One conversation = one Claude process; incoming messages queue automatically.
 
 ### Specify the Claude model
 
@@ -459,7 +442,7 @@ claude:
     - "--model"
     - "claude-sonnet-4-6"
 
-# Override for a specific conversation
+# Per-conversation override
 channels:
   "-1001234567890":
     work_dir: "/projects/important"
@@ -468,81 +451,69 @@ channels:
       - "claude-opus-4-6"
 ```
 
-### Adjust the timeout
+### Timeout
 
 ```yaml
 claude:
-  timeout_sec: 900   # default 300 s; increase for complex long-running tasks
-```
-
-### JSON logging (for log aggregation)
-
-```yaml
-log:
-  format: "json"
-  level: "info"   # debug | info | warn | error
+  timeout_sec: 900   # 15 min; increase for very long tasks
 ```
 
 ### Terminal conversation log
 
-Enable a human-readable transcript of every conversation printed to stderr:
-
 ```yaml
 log:
-  verbose: true   # default false
+  verbose: true
 ```
 
-Example output:
+Prints a real-time, human-readable transcript to stderr:
 
 ```
 15:04:05 ▶ conv=123456789  user:7846572322
-  Add error handling to main.go
+  Refactor the payment module
 
-15:04:05   🔧 Read  {"path":"main.go"}
-15:04:06   🔧 Edit  {"path":"main.go","old_string":"func process...
-15:04:08 ◀ CLAUDE
-  Done. Added error handling on line 23:
-  - Check the error returned by os.Open
-  - Added defer f.Close()
+15:04:07   🔧 Read  {"file_path":"/projects/api/payment.go"}
+15:04:09   🔧 Edit  {"file_path":"/projects/api/payment.go",...
+15:04:15 ◀ CLAUDE
+  Done. Extracted PaymentService into its own struct, added
+  interface, updated 3 call sites.
 ```
-
-With `verbose: false` (default) only structured slog entries are printed.
-
-### Message queuing and cancellation
-
-New messages arriving while Claude is running are **queued** and processed in order after the current task completes. To cancel the running task (and clear the queue):
-
-- Send `/cancel`
-- Or click the **[✕ Cancel]** inline button on the placeholder message
 
 ### Persistent sessions
 
-Claude session IDs are stored in `~/.lazycoding/sessions.json` and survive process restarts. After a restart the bot resumes the same Claude session for each conversation, so context is not lost.
+Claude session IDs survive bot restarts. They are saved to `~/.lazycoding/sessions.json` automatically — no configuration needed. After a restart, each conversation resumes from exactly where it left off.
+
+### JSON logging
+
+```yaml
+log:
+  format: "json"
+  level: "info"
+```
 
 ---
 
 ## FAQ
 
 **Q: No response after sending a message**
-→ Check that `allowed_user_ids` includes your user\_id (or leave it empty to allow everyone)
+→ Check `allowed_user_ids` contains your user\_id (or leave it empty)
 → Check the terminal for error logs
-→ Verify `claude` is in PATH for the user running the bot: `which claude`
+→ Verify `claude` is in PATH: `which claude`
 
 **Q: "Error starting Claude" reply**
-→ Manually verify the CLI:
 ```bash
 cd /your/work_dir
 claude --print "hello" --output-format stream-json --dangerously-skip-permissions
 ```
 
-**Q: YAML parse error for a negative chat\_id**
-→ It must be quoted: `"-1001234567890":` not `-1001234567890:`
+**Q: YAML parse error on a negative chat\_id**
+→ Must be quoted: `"-1001234567890":` not `-1001234567890:`
 
-**Q: /session changes after a restart**
-→ Expected if session persistence is not configured. With `~/.lazycoding/sessions.json` (created automatically) sessions survive restarts.
+**Q: Task timed out (signal: killed)**
+→ Increase `claude.timeout_sec` in config.yaml. Default is 900 s (15 min).
+→ The Claude session is still saved; send a follow-up like "continue" to resume.
 
 **Q: Voice message says "Voice transcription is not enabled"**
-→ Set `transcription.enabled: true` and configure a backend. Groq is the easiest (no install):
+→ Set `transcription.enabled: true` and configure a backend (Groq is easiest):
 ```yaml
 transcription:
   enabled: true
@@ -551,27 +522,26 @@ transcription:
     api_key: "gsk_..."
 ```
 
-**Q: "command not found: whisper-cli" when using whisper-cpp**
-→ `brew install whisper-cpp`
-→ Confirm: `which whisper-cli`
-→ If the binary has a different name, set the full path: `bin: "/opt/homebrew/bin/whisper-cli"`
+**Q: "command not found: whisper-cli"**
+→ `brew install whisper-cpp` then confirm with `which whisper-cli`
 
-**Q: whisper-cpp reports OGG format not supported**
-→ Install ffmpeg: `brew install ffmpeg` (the bot uses it automatically)
-→ Or switch to the Groq backend (accepts OGG natively)
+**Q: whisper-cpp OGG format error**
+→ `brew install ffmpeg` (auto-used for conversion)
+→ Or switch to Groq backend (accepts OGG natively)
 
 **Q: Where did my uploaded file go?**
-→ Saved in the conversation's `work_dir` under the original filename.
-→ Run `/workdir` to see the current work directory.
+→ Saved in the conversation's `work_dir`. Run `/workdir` to see the path.
 
 **Q: /download says "File not found"**
-→ The path is relative to the work directory:
+→ Path is relative to `work_dir`:
 ```
-Work dir:  /projects/myapp
-File:      /projects/myapp/src/main.go
-Command:   /download src/main.go
+work_dir:  /projects/myapp
+file:      /projects/myapp/src/main.go
+command:   /download src/main.go
 ```
 
-**Q: whisper-native build error**
-→ Confirm the system library is installed: `brew install whisper-cpp`
-→ Use the correct build tag: `go build -tags whisper ./cmd/lazycoding/`
+**Q: whisper-native build fails**
+→ `brew install whisper-cpp` then `go build -tags whisper ./cmd/lazycoding/`
+
+**Q: Session lost after restart**
+→ Sessions are stored in `~/.lazycoding/sessions.json` automatically and survive restarts. If the file is missing or corrupt, a fresh session is started.
