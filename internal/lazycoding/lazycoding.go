@@ -634,6 +634,14 @@ func (lc *Lazycoding) handleCommand(ctx context.Context, ev channel.InboundEvent
 	case "session":
 		if sess, ok := lc.store.Get(lc.sessionKey(convID)); ok && sess.ClaudeSessionID != "" {
 			lc.ch.SendText(ctx, convID, "Current session ID: <code>"+tgrender.EscapeHTML(sess.ClaudeSessionID)+"</code>") //nolint:errcheck
+		} else if workDir := lc.cfg.WorkDirFor(convID); workDir != "" {
+			if id := discoverLocalSession(workDir); id != "" {
+				lc.ch.SendText(ctx, convID, //nolint:errcheck
+					"Discovered local session: <code>"+tgrender.EscapeHTML(id)+"</code>\n"+
+						"<i>(will be adopted on your first message)</i>")
+			} else {
+				lc.ch.SendText(ctx, convID, "No active session yet.") //nolint:errcheck
+			}
 		} else {
 			lc.ch.SendText(ctx, convID, "No active session yet.") //nolint:errcheck
 		}
