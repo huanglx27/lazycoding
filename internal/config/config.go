@@ -7,7 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"lazycoding/internal/transcribe"
+	"github.com/bishenghua/lazycoding/internal/transcribe"
 )
 
 // Config is the root configuration structure.

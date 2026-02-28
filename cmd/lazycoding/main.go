@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"lazycoding/internal/agent/claude"
-	tgadapter "lazycoding/internal/channel/telegram"
-	"lazycoding/internal/config"
-	"lazycoding/internal/lazycoding"
-	"lazycoding/internal/session"
-	"lazycoding/internal/transcribe"
+	"github.com/bishenghua/lazycoding/internal/agent/claude"
+	tgadapter "github.com/bishenghua/lazycoding/internal/channel/telegram"
+	"github.com/bishenghua/lazycoding/internal/config"
+	"github.com/bishenghua/lazycoding/internal/lazycoding"
+	"github.com/bishenghua/lazycoding/internal/session"
+	"github.com/bishenghua/lazycoding/internal/transcribe"
 )
 
 func main() {

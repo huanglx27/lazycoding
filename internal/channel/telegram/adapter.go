@@ -15,9 +15,9 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"lazycoding/internal/channel"
-	"lazycoding/internal/config"
-	"lazycoding/internal/transcribe"
+	"github.com/bishenghua/lazycoding/internal/channel"
+	"github.com/bishenghua/lazycoding/internal/config"
+	"github.com/bishenghua/lazycoding/internal/transcribe"
 )
 
 // Adapter implements channel.Channel for Telegram.

@@ -1,4 +1,4 @@
-module lazycoding
+module github.com/bishenghua/lazycoding
 
 go 1.23
 

@@ -1,5 +1,7 @@
 # lazycoding 🛋️
 
+[English](../README.md) · [简体中文](docs/README.zh-CN.md)
+
 **Control a local Claude Code session from your phone, over Telegram.**
 
 Write code, fix bugs, and manage multiple projects — all by sending a message. lazycoding runs on your machine, bridges Telegram to the `claude` CLI, and streams every tool call and response back to your chat in real time.

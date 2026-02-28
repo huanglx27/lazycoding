@@ -11,11 +11,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"lazycoding/internal/agent"
-	"lazycoding/internal/channel"
-	tgrender "lazycoding/internal/channel/telegram"
-	"lazycoding/internal/config"
-	"lazycoding/internal/session"
+	"github.com/bishenghua/lazycoding/internal/agent"
+	"github.com/bishenghua/lazycoding/internal/channel"
+	tgrender "github.com/bishenghua/lazycoding/internal/channel/telegram"
+	"github.com/bishenghua/lazycoding/internal/config"
+	"github.com/bishenghua/lazycoding/internal/session"
 )
 
 // safeSlice returns s[:n] stepped back to the nearest valid UTF-8 rune
