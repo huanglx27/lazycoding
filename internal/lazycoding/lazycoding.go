@@ -669,6 +669,13 @@ func (lc *Lazycoding) handleCommand(ctx context.Context, ev channel.InboundEvent
 		}
 		lc.ch.SendText(ctx, convID, "Work dir: <code>"+tgrender.EscapeHTML(workDir)+"</code>") //nolint:errcheck
 
+	case "pwd":
+		dir := lc.currentDir(convID)
+		if dir == "" {
+			dir = "(lazycoding launch directory)"
+		}
+		lc.ch.SendText(ctx, convID, "Current directory: <code>"+tgrender.EscapeHTML(dir)+"</code>") //nolint:errcheck
+
 	case "download":
 		lc.handleDownload(ctx, ev)
 
@@ -684,6 +691,7 @@ func (lc *Lazycoding) handleCommand(ctx context.Context, ev channel.InboundEvent
 			"/reset      – clear session history and start fresh\n" +
 			"/session    – show current Claude session ID\n" +
 			"/workdir    – show current work directory\n" +
+			"/pwd        – show current directory (set by /cd)\n" +
 			"/download &lt;path&gt; – download a file from the work directory\n" +
 			"/help       – show this help"
 		lc.ch.SendText(ctx, convID, help) //nolint:errcheck
