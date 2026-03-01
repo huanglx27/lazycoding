@@ -1,6 +1,7 @@
 package lazycoding
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -54,17 +55,143 @@ func convLogRecv(convID, userKey, text string) {
 		ts(), arrow, meta, indent(text))
 }
 
-// convLogTool logs a tool invocation.
-func convLogTool(name, input string) {
+// convLogTool logs a tool invocation with a human-readable summary.
+func convLogTool(name, input, workDir string) {
 	label := color(ansiYellow, "🔧 "+name)
-	if input != "" {
-		if len(input) > 120 {
-			input = input[:117] + "…"
-		}
-		fmt.Fprintf(os.Stderr, "%s   %s  %s\n", ts(), label, input)
+	summary := formatToolInput(name, input, workDir)
+	if summary != "" {
+		fmt.Fprintf(os.Stderr, "%s   %s  %s\n", ts(), label, color(ansiGray, summary))
 	} else {
 		fmt.Fprintf(os.Stderr, "%s   %s\n", ts(), label)
 	}
+}
+
+// shortenPath strips the workDir prefix from p; if still long, keeps last 3 segments.
+func shortenPath(p, workDir string) string {
+	if workDir != "" && strings.HasPrefix(p, workDir) {
+		rel := strings.TrimPrefix(p, workDir)
+		rel = strings.TrimPrefix(rel, "/")
+		if rel != "" {
+			p = rel
+		}
+	}
+	if len(p) > 80 {
+		parts := strings.Split(p, "/")
+		if len(parts) > 3 {
+			p = "…/" + strings.Join(parts[len(parts)-3:], "/")
+		}
+	}
+	return p
+}
+
+// formatToolInput extracts a readable summary from a tool's JSON input.
+func formatToolInput(toolName, input, workDir string) string {
+	if input == "" {
+		return ""
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(input), &m); err != nil {
+		if len(input) > 100 {
+			return input[:97] + "…"
+		}
+		return input
+	}
+
+	getString := func(key string) string {
+		raw, ok := m[key]
+		if !ok {
+			return ""
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return strings.Trim(string(raw), `"`)
+		}
+		return s
+	}
+
+	switch toolName {
+	case "Read", "Write", "Edit", "NotebookEdit":
+		p := getString("file_path")
+		if p == "" {
+			p = getString("notebook_path")
+		}
+		return shortenPath(p, workDir)
+
+	case "Bash":
+		cmd := getString("command")
+		if len(cmd) > 200 {
+			cmd = cmd[:197] + "…"
+		}
+		return cmd
+
+	case "Glob":
+		pat := getString("pattern")
+		dir := getString("path")
+		if dir != "" {
+			return pat + "  in " + shortenPath(dir, workDir)
+		}
+		return pat
+
+	case "Grep":
+		pat := getString("pattern")
+		path := getString("path")
+		glob := getString("glob")
+		s := pat
+		if glob != "" {
+			s += "  [" + glob + "]"
+		}
+		if path != "" {
+			s += "  in " + shortenPath(path, workDir)
+		}
+		return s
+
+	case "WebFetch":
+		url := getString("url")
+		if len(url) > 120 {
+			url = url[:117] + "…"
+		}
+		return url
+
+	case "WebSearch":
+		return getString("query")
+
+	case "Task":
+		desc := getString("description")
+		if len(desc) > 120 {
+			desc = desc[:117] + "…"
+		}
+		return desc
+
+	case "AskUserQuestion":
+		raw, ok := m["questions"]
+		if ok {
+			var questions []struct {
+				Question string `json:"question"`
+			}
+			if err := json.Unmarshal(raw, &questions); err == nil && len(questions) > 0 {
+				q := questions[0].Question
+				if len(q) > 120 {
+					q = q[:117] + "…"
+				}
+				return q
+			}
+		}
+
+	case "TodoWrite":
+		raw, ok := m["todos"]
+		if ok {
+			var todos []interface{}
+			if err := json.Unmarshal(raw, &todos); err == nil {
+				return fmt.Sprintf("(%d todos)", len(todos))
+			}
+		}
+	}
+
+	// fallback: truncated raw JSON
+	if len(input) > 160 {
+		return input[:157] + "…"
+	}
+	return input
 }
 
 // convLogSend logs the final Claude response.

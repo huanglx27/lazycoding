@@ -10,12 +10,21 @@ import (
 
 // rawLine is the top-level structure of a stream-json line.
 type rawLine struct {
-	Type      string      `json:"type"`
-	Subtype   string      `json:"subtype"`
-	SessionID string      `json:"session_id"`
-	Message   *rawMessage `json:"message"`
-	Result    string      `json:"result"`
-	IsError   bool        `json:"is_error"`
+	Type         string      `json:"type"`
+	Subtype      string      `json:"subtype"`
+	SessionID    string      `json:"session_id"`
+	Message      *rawMessage `json:"message"`
+	Result       string      `json:"result"`
+	IsError      bool        `json:"is_error"`
+	TotalCostUSD float64     `json:"total_cost_usd"`
+	Usage        rawUsage    `json:"usage"`
+}
+
+type rawUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
 
 type rawMessage struct {
@@ -93,7 +102,18 @@ func ParseLineMulti(line string) []agent.Event {
 		if raw.IsError {
 			return []agent.Event{{Kind: agent.EventKindError, Err: fmt.Errorf("claude error: %s", raw.Result)}}
 		}
-		return []agent.Event{{Kind: agent.EventKindResult, Text: raw.Result, SessionID: raw.SessionID}}
+		return []agent.Event{{
+			Kind:      agent.EventKindResult,
+			Text:      raw.Result,
+			SessionID: raw.SessionID,
+			Usage: &agent.Usage{
+				InputTokens:              raw.Usage.InputTokens,
+				OutputTokens:             raw.Usage.OutputTokens,
+				CacheReadInputTokens:     raw.Usage.CacheReadInputTokens,
+				CacheCreationInputTokens: raw.Usage.CacheCreationInputTokens,
+				TotalCostUSD:             raw.TotalCostUSD,
+			},
+		}}
 	}
 
 	return nil

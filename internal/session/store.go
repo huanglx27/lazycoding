@@ -11,8 +11,12 @@ import (
 
 // Session holds per-user state that persists across messages.
 type Session struct {
-	ClaudeSessionID string    `json:"claude_session_id"`
-	LastUsed        time.Time `json:"last_used"`
+	ClaudeSessionID   string    `json:"claude_session_id"`
+	LastUsed          time.Time `json:"last_used"`
+	ModelOverride     string    `json:"model_override,omitempty"`
+	TotalCostUSD      float64   `json:"total_cost_usd,omitempty"`
+	TotalInputTokens  int       `json:"total_input_tokens,omitempty"`
+	TotalOutputTokens int       `json:"total_output_tokens,omitempty"`
 }
 
 // Store is the interface for session persistence.

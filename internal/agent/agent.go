@@ -14,6 +14,15 @@ const (
 	EventKindError                       // terminal error
 )
 
+// Usage holds token consumption and cost data from a completed Claude turn.
+type Usage struct {
+	InputTokens              int
+	OutputTokens             int
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
+	TotalCostUSD             float64
+}
+
 // Event is one item emitted on the stream returned by Agent.Stream.
 type Event struct {
 	Kind       EventKind
@@ -23,6 +32,7 @@ type Event struct {
 	ToolUseID  string // EventKindToolUse / EventKindToolResult – correlation id
 	ToolResult string // EventKindToolResult – raw output from the tool
 	SessionID  string // EventKindInit / EventKindResult
+	Usage      *Usage // EventKindResult – token usage for this turn
 	Err        error  // EventKindError
 }
 

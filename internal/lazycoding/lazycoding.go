@@ -83,8 +83,9 @@ type Lazycoding struct {
 	store session.Store
 	cfg   *config.Config
 
-	pendingMu sync.Mutex
-	pending   map[string]*pendingState // key = ConversationID
+	pendingMu     sync.Mutex
+	pending       map[string]*pendingState // key = sessionKey
+	runningStatus sync.Map                 // key = sessionKey → string (current rendered HTML)
 }
 
 // pendingState tracks one in-flight Claude request and its message queue.
@@ -273,6 +274,9 @@ func (lc *Lazycoding) handleMessage(ctx context.Context, ev channel.InboundEvent
 	var claudeSessionID string
 	if sess, ok := lc.store.Get(sessKey); ok {
 		claudeSessionID = sess.ClaudeSessionID
+		if sess.ModelOverride != "" {
+			extraFlags = applyModelToFlags(extraFlags, sess.ModelOverride)
+		}
 	} else if workDir != "" {
 		// No stored session yet.  Try to discover the most recent session from
 		// Claude Code's own project store so we can seamlessly resume a session
@@ -333,6 +337,36 @@ type toolEntry struct {
 	output string // truncated tool result; empty = not yet received
 }
 
+// applyModelToFlags returns a copy of flags with any existing --model pair
+// removed and the given model appended, so the override always wins.
+func applyModelToFlags(flags []string, model string) []string {
+	out := make([]string, 0, len(flags)+2)
+	for i := 0; i < len(flags); i++ {
+		if flags[i] == "--model" && i+1 < len(flags) {
+			i++ // skip value
+			continue
+		}
+		out = append(out, flags[i])
+	}
+	return append(out, "--model", model)
+}
+
+// effectiveModel returns the model that will be used for convID, checking the
+// session override first, then the config extra_flags, then returning a
+// placeholder string.
+func (lc *Lazycoding) effectiveModel(convID string, sess session.Session) string {
+	if sess.ModelOverride != "" {
+		return sess.ModelOverride
+	}
+	flags := lc.cfg.ExtraFlagsFor(convID)
+	for i := 0; i+1 < len(flags); i++ {
+		if flags[i] == "--model" {
+			return flags[i+1]
+		}
+	}
+	return "(Claude default)"
+}
+
 // isThinkingSignatureError reports whether err is the "Invalid 'signature' in
 // 'thinking' block" error that Claude returns when a resumed session contains
 // expired extended-thinking signatures.
@@ -358,6 +392,7 @@ func (lc *Lazycoding) consumeStream(
 	var tools []toolEntry
 	toolIdx := map[string]int{}
 	var newSessionID string
+	var newUsage *agent.Usage
 	var lastFlush time.Time
 	textStarted := false
 
@@ -396,8 +431,13 @@ func (lc *Lazycoding) consumeStream(
 		return "<i>(thinking…)</i>"
 	}
 
+	statusKey := lc.sessionKey(ev.ConversationID)
+	lc.runningStatus.Store(statusKey, "<i>(thinking…)</i>")
+	defer lc.runningStatus.Delete(statusKey)
+
 	doFlush := func() {
 		content := render()
+		lc.runningStatus.Store(statusKey, content)
 		if err := lc.ch.UpdateText(ctx, handle, content); err != nil {
 			slog.Warn("update text failed", "conversation", ev.ConversationID, "err", err)
 		}
@@ -425,19 +465,15 @@ func (lc *Lazycoding) consumeStream(
 
 		case agent.EventKindToolUse:
 			label := fmt.Sprintf("🔧 <i>%s</i>", tgrender.EscapeHTML(agEv.ToolName))
-			if agEv.ToolInput != "" {
-				inp := agEv.ToolInput
-				if len(inp) > 60 {
-					inp = safeSlice(inp, 57) + "…"
-				}
+			if summary := formatToolInput(agEv.ToolName, agEv.ToolInput, lc.cfg.WorkDirFor(ev.ConversationID)); summary != "" {
 				label = fmt.Sprintf("🔧 <i>%s:</i> <code>%s</code>",
-					tgrender.EscapeHTML(agEv.ToolName), tgrender.EscapeHTML(inp))
+					tgrender.EscapeHTML(agEv.ToolName), tgrender.EscapeHTML(summary))
 			}
 			entry := toolEntry{id: agEv.ToolUseID, line: label}
 			toolIdx[agEv.ToolUseID] = len(tools)
 			tools = append(tools, entry)
 			if lc.cfg.Log.Verbose {
-				convLogTool(agEv.ToolName, agEv.ToolInput)
+				convLogTool(agEv.ToolName, agEv.ToolInput, lc.cfg.WorkDirFor(ev.ConversationID))
 			}
 			doFlush()
 
@@ -455,6 +491,9 @@ func (lc *Lazycoding) consumeStream(
 		case agent.EventKindResult:
 			if agEv.SessionID != "" {
 				newSessionID = agEv.SessionID
+			}
+			if agEv.Usage != nil {
+				newUsage = agEv.Usage
 			}
 			if textBuf.Len() == 0 && agEv.Text != "" {
 				textBuf.WriteString(agEv.Text)
@@ -509,17 +548,24 @@ func (lc *Lazycoding) consumeStream(
 		convLogSend(textBuf.String())
 	}
 
-	if newSessionID != "" {
+	if newSessionID != "" || newUsage != nil {
 		sk := lc.sessionKey(ev.ConversationID)
-		lc.store.Set(sk, session.Session{
-			ClaudeSessionID: newSessionID,
-			LastUsed:        time.Now(),
-		})
-		slog.Info("session saved",
-			"key", sk,
-			"conversation", ev.ConversationID,
-			"session", newSessionID,
-		)
+		existing, _ := lc.store.Get(sk)
+		if newSessionID != "" {
+			existing.ClaudeSessionID = newSessionID
+			slog.Info("session saved",
+				"key", sk,
+				"conversation", ev.ConversationID,
+				"session", newSessionID,
+			)
+		}
+		existing.LastUsed = time.Now()
+		if newUsage != nil {
+			existing.TotalCostUSD += newUsage.TotalCostUSD
+			existing.TotalInputTokens += newUsage.InputTokens + newUsage.CacheReadInputTokens + newUsage.CacheCreationInputTokens
+			existing.TotalOutputTokens += newUsage.OutputTokens
+		}
+		lc.store.Set(sk, existing)
 	}
 
 	return textBuf.String()
@@ -619,6 +665,54 @@ func (lc *Lazycoding) handleCommand(ctx context.Context, ev channel.InboundEvent
 			"<i>Work directory:</i> <code>" + tgrender.EscapeHTML(workDir) + "</code>"
 		lc.ch.SendText(ctx, convID, msg) //nolint:errcheck
 
+	case "status":
+		if val, ok := lc.runningStatus.Load(lc.sessionKey(convID)); ok {
+			content := "<b>Current task status:</b>\n\n" + val.(string)
+			lc.ch.SendText(ctx, convID, content) //nolint:errcheck
+		} else {
+			lc.ch.SendText(ctx, convID, "No task is currently running.") //nolint:errcheck
+		}
+
+	case "compact":
+		prompt := "/compact"
+		if ev.CommandArgs != "" {
+			prompt += " " + ev.CommandArgs
+		}
+		lc.dispatch(channel.InboundEvent{
+			UserKey:        ev.UserKey,
+			ConversationID: convID,
+			Text:           prompt,
+		})
+
+	case "model":
+		sessKey := lc.sessionKey(convID)
+		existing, _ := lc.store.Get(sessKey)
+		if ev.CommandArgs == "" {
+			model := lc.effectiveModel(convID, existing)
+			lc.ch.SendText(ctx, convID, "Current model: <code>"+tgrender.EscapeHTML(model)+"</code>") //nolint:errcheck
+		} else {
+			newModel := strings.TrimSpace(ev.CommandArgs)
+			existing.ModelOverride = newModel
+			lc.store.Set(sessKey, existing)
+			lc.ch.SendText(ctx, convID, //nolint:errcheck
+				"Model set to <code>"+tgrender.EscapeHTML(newModel)+"</code>. Takes effect on next message.\n"+
+					"<i>Use /model to confirm, /reset to clear the model override along with session history.</i>")
+		}
+
+	case "cost":
+		sess, ok := lc.store.Get(lc.sessionKey(convID))
+		if !ok || (sess.TotalCostUSD == 0 && sess.TotalInputTokens == 0) {
+			lc.ch.SendText(ctx, convID, "No usage data yet for this session.") //nolint:errcheck
+		} else {
+			msg := fmt.Sprintf(
+				"<b>Session usage</b>\n"+
+					"Input tokens:  <code>%d</code>\n"+
+					"Output tokens: <code>%d</code>\n"+
+					"Total cost:    <code>$%.5f</code>",
+				sess.TotalInputTokens, sess.TotalOutputTokens, sess.TotalCostUSD)
+			lc.ch.SendText(ctx, convID, msg) //nolint:errcheck
+		}
+
 	case "cancel":
 		if lc.cancelConversation(convID) {
 			lc.ch.SendText(ctx, convID, "⏹ Cancelled.") //nolint:errcheck
@@ -662,14 +756,19 @@ func (lc *Lazycoding) handleCommand(ctx context.Context, ev channel.InboundEvent
 			"• Text message → sent directly to Claude\n" +
 			"• Voice message → transcribed, then sent to Claude\n" +
 			"• File / photo → saved to work dir, Claude is notified\n\n" +
-			"<b>Commands:</b>\n" +
-			"/start      – welcome message and current work directory\n" +
-			"/cancel     – stop current task (session is kept)\n" +
-			"/reset      – clear session history and start fresh\n" +
-			"/session    – show current Claude session ID\n" +
-			"/workdir    – show current work directory\n" +
+			"<b>Session commands:</b>\n" +
+			"/status              – show what Claude is doing right now\n" +
+			"/cancel              – stop current task (session is kept)\n" +
+			"/reset               – clear session history and start fresh\n" +
+			"/compact [hint]      – compress session context\n" +
+			"/session             – show current Claude session ID\n" +
+			"/model [name]        – show or switch the Claude model\n" +
+			"/cost                – show token usage and estimated cost\n\n" +
+			"<b>Info commands:</b>\n" +
+			"/workdir             – show current work directory\n" +
 			"/download &lt;path&gt; – download a file from the work directory\n" +
-			"/help       – show this help"
+			"/start               – welcome message\n" +
+			"/help                – show this help"
 		lc.ch.SendText(ctx, convID, help) //nolint:errcheck
 
 	default:
