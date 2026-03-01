@@ -676,6 +676,12 @@ func (lc *Lazycoding) handleCommand(ctx context.Context, ev channel.InboundEvent
 		}
 		lc.ch.SendText(ctx, convID, "Current directory: <code>"+tgrender.EscapeHTML(dir)+"</code>") //nolint:errcheck
 
+	case "cd":
+		lc.handleCd(ctx, ev)
+
+	case "ls":
+		lc.handleLs(ctx, ev)
+
 	case "download":
 		lc.handleDownload(ctx, ev)
 
@@ -692,6 +698,8 @@ func (lc *Lazycoding) handleCommand(ctx context.Context, ev channel.InboundEvent
 			"/session    – show current Claude session ID\n" +
 			"/workdir    – show current work directory\n" +
 			"/pwd        – show current directory (set by /cd)\n" +
+			"/cd &lt;path&gt; – change current directory\n" +
+			"/ls [path]  – list directory contents\n" +
 			"/download &lt;path&gt; – download a file from the work directory\n" +
 			"/help       – show this help"
 		lc.ch.SendText(ctx, convID, help) //nolint:errcheck
@@ -741,6 +749,164 @@ func (lc *Lazycoding) handleDownload(ctx context.Context, ev channel.InboundEven
 		slog.Error("send document failed", "err", err)
 		lc.ch.SendText(ctx, convID, fmt.Sprintf("⚠️ Failed to send file: %v", err)) //nolint:errcheck
 	}
+}
+
+// handleCd processes the /cd command to change the current directory.
+func (lc *Lazycoding) handleCd(ctx context.Context, ev channel.InboundEvent) {
+	convID := ev.ConversationID
+	arg := strings.TrimSpace(ev.CommandArgs)
+
+	var target string
+	if arg == "" || arg == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			lc.ch.SendText(ctx, convID, "⚠️ Could not determine home directory: "+err.Error()) //nolint:errcheck
+			return
+		}
+		target = home
+	} else if strings.HasPrefix(arg, "~/") || strings.HasPrefix(arg, "~\\") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			lc.ch.SendText(ctx, convID, "⚠️ Could not determine home directory: "+err.Error()) //nolint:errcheck
+			return
+		}
+		target = filepath.Join(home, arg[2:])
+	} else if filepath.IsAbs(arg) {
+		target = arg
+	} else {
+		current := lc.currentDir(convID)
+		if current == "" {
+			current = "."
+		}
+		target = filepath.Join(current, arg)
+	}
+
+	target = filepath.Clean(target)
+
+	info, err := os.Stat(target)
+	if err != nil {
+		lc.ch.SendText(ctx, convID, "⚠️ Directory not found: <code>"+tgrender.EscapeHTML(arg)+"</code>") //nolint:errcheck
+		return
+	}
+	if !info.IsDir() {
+		lc.ch.SendText(ctx, convID, "⚠️ Not a directory: <code>"+tgrender.EscapeHTML(arg)+"</code>") //nolint:errcheck
+		return
+	}
+
+	lc.cwdMu.Lock()
+	lc.cwd[convID] = target
+	lc.cwdMu.Unlock()
+
+	lc.ch.SendText(ctx, convID, "Current directory is now:\n<code>"+tgrender.EscapeHTML(target)+"</code>") //nolint:errcheck
+}
+
+// handleLs processes the /ls command to list directory contents.
+func (lc *Lazycoding) handleLs(ctx context.Context, ev channel.InboundEvent) {
+	convID := ev.ConversationID
+	arg := strings.TrimSpace(ev.CommandArgs)
+
+	var target string
+	if arg == "" {
+		target = lc.currentDir(convID)
+		if target == "" {
+			target = "."
+		}
+	} else if filepath.IsAbs(arg) {
+		target = arg
+	} else if strings.HasPrefix(arg, "~/") || strings.HasPrefix(arg, "~\\") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			lc.ch.SendText(ctx, convID, "⚠️ Could not determine home directory: "+err.Error()) //nolint:errcheck
+			return
+		}
+		target = filepath.Join(home, arg[2:])
+	} else if arg == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			lc.ch.SendText(ctx, convID, "⚠️ Could not determine home directory: "+err.Error()) //nolint:errcheck
+			return
+		}
+		target = home
+	} else {
+		current := lc.currentDir(convID)
+		if current == "" {
+			current = "."
+		}
+		target = filepath.Join(current, arg)
+	}
+
+	target = filepath.Clean(target)
+
+	info, err := os.Stat(target)
+	if err != nil {
+		lc.ch.SendText(ctx, convID, "⚠️ Directory not found: <code>"+tgrender.EscapeHTML(arg)+"</code>") //nolint:errcheck
+		return
+	}
+	if !info.IsDir() {
+		lc.ch.SendText(ctx, convID, "⚠️ Not a directory: <code>"+tgrender.EscapeHTML(arg)+"</code>") //nolint:errcheck
+		return
+	}
+
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		lc.ch.SendText(ctx, convID, "⚠️ Could not read directory: "+err.Error()) //nolint:errcheck
+		return
+	}
+
+	var dirs []os.DirEntry
+	var files []os.DirEntry
+
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") {
+			continue // filter out hidden files
+		}
+		if e.IsDir() {
+			dirs = append(dirs, e)
+		} else {
+			files = append(files, e)
+		}
+	}
+
+	// ReadDir already sorts by name
+
+	var sb strings.Builder
+	sb.WriteString("📁 <code>")
+	sb.WriteString(tgrender.EscapeHTML(target))
+	sb.WriteString("</code>\n\n")
+
+	count := 0
+	maxItems := 50
+
+	for _, d := range dirs {
+		if count >= maxItems {
+			break
+		}
+		sb.WriteString("📂 <code>")
+		sb.WriteString(tgrender.EscapeHTML(d.Name()))
+		sb.WriteString("/</code>\n")
+		count++
+	}
+
+	for _, f := range files {
+		if count >= maxItems {
+			break
+		}
+		sb.WriteString("📄 <code>")
+		sb.WriteString(tgrender.EscapeHTML(f.Name()))
+		sb.WriteString("</code>\n")
+		count++
+	}
+
+	if count == 0 && len(entries) > 0 {
+		sb.WriteString("<i>(only hidden files)</i>")
+	} else if count == 0 {
+		sb.WriteString("<i>(empty directory)</i>")
+	} else if len(dirs)+len(files) > maxItems {
+		sb.WriteString(fmt.Sprintf("\n<i>... and %d more items</i>", len(dirs)+len(files)-maxItems))
+	}
+
+	lc.ch.SendText(ctx, convID, sb.String()) //nolint:errcheck
 }
 
 // safeJoin joins base and rel, returning an error if the result escapes base.
