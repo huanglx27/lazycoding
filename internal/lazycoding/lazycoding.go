@@ -129,7 +129,7 @@ func (lc *Lazycoding) currentDir(convID string) string {
 // project share one Claude session (and are serialised against each other).
 // Falls back to the conversation ID when no work directory is set.
 func (lc *Lazycoding) sessionKey(convID string) string {
-	if d := lc.cfg.WorkDirFor(convID); d != "" {
+	if d := lc.currentDir(convID); d != "" {
 		return d
 	}
 	return convID
