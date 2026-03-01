@@ -147,7 +147,7 @@ type Agent interface {
 | `EventKindText` | `Text` | Incremental Claude text output |
 | `EventKindToolUse` | `ToolName`, `ToolInput`, `ToolUseID` | Claude invoked a tool |
 | `EventKindToolResult` | `ToolUseID`, `ToolResult` | Tool returned a result |
-| `EventKindResult` | `SessionID`, `Text` | Final event; session ID may be updated |
+| `EventKindResult` | `SessionID`, `Text`, `Usage` | Final event; session ID may be updated; Usage carries token counts and cost |
 | `EventKindError` | `Err` | Non-recoverable error (timeout, crash, etc.) |
 
 ---
@@ -281,10 +281,27 @@ The core UX challenge is mapping a streaming terminal session to a chat message.
 | `EventKindText` | Append to buffer; `UpdateText` if throttle elapsed |
 | `EventKindToolUse` | Replace placeholder with tool name + input |
 | `EventKindToolResult` | Append truncated output under tool entry |
-| `EventKindResult` | Final flush, `Seal`, optional quick-reply keyboard; if combined tool summary + reply text exceeds 4096 chars, update placeholder with tool summary and send the full reply text as new message(s) via `Split` |
+| `EventKindResult` | Final flush, `Seal`, optional quick-reply keyboard; accumulate `Usage` into session; if combined tool summary + reply text exceeds 4096 chars, update placeholder with tool summary and send the full reply text as new message(s) via `Split` |
 | `EventKindError` | `Seal` + send `⚠️ Error:` message; if the error is an expired thinking-block signature, prompt the user to run `/reset` |
 
 **Message size limits:** Telegram caps messages at 4096 bytes. `Split` breaks large responses into multiple messages; `UpdateText` uses `Truncate`. Both functions respect UTF-8 rune boundaries (never cut a multi-byte character in half). When `EventKindResult` arrives and the combined content (tool summary + reply text) exceeds 4096 characters, the tool summary is kept in the original placeholder message and the full reply text is sent as one or more new messages using `Split`, ensuring no content is ever truncated.
+
+### Tool Input Formatting
+
+`formatToolInput(toolName, input, workDir string) string` (defined in `convlog.go`, used by both the terminal verbose log and the Telegram message builder) extracts a human-readable summary from the raw JSON input of each tool call:
+
+| Tool | Displayed as |
+|------|-------------|
+| `Read` / `Write` / `Edit` | File path relative to `workDir`; if still > 80 chars, last 3 segments with `…/` prefix |
+| `Bash` | Full command string (up to 200 chars) |
+| `Glob` | Pattern + shortened directory |
+| `Grep` | Pattern + optional glob filter + shortened path |
+| `WebFetch` | URL (up to 120 chars) |
+| `WebSearch` | Query string |
+| `Task` | Description (up to 120 chars) |
+| `AskUserQuestion` | First question text (up to 120 chars) |
+| `TodoWrite` | `(N todos)` |
+| others | Truncated raw JSON (up to 160 chars) |
 
 **HTML rendering:** All text from Claude is passed through `MarkdownToTelegramHTML`, which converts fenced code blocks, tables (Unicode box-drawing), headers, bold/italic/strikethrough, inline code, blockquotes, links, and bullet lists into Telegram's HTML parse mode. Raw HTML entities are escaped using only the four named entities Telegram accepts (`&amp;` `&lt;` `&gt;` `&quot;`).
 
@@ -430,14 +447,26 @@ A background goroutine sends `SendTyping` to the conversation every 4 seconds fo
 
 When a message arrives while Claude is still running, it is queued and the sender immediately receives `⏳ Queued — will run after the current task.` This ensures users are not left wondering whether their message was received.
 
+### `/status` Query
+
+`runningStatus` is a `sync.Map` (key = `sessionKey`, value = current rendered HTML) stored on the `Lazycoding` struct. It is written at two points:
+1. **Immediately** when `consumeStream` starts — set to `"(thinking…)"` before any events arrive.
+2. **After every `doFlush`** — updated to the latest rendered content (tool list + accumulated text).
+
+It is deleted via `defer` when `consumeStream` returns. The `/status` command handler reads this map and sends the snapshot as a new chat message, giving the user a mid-task progress view without affecting the ongoing placeholder message.
+
 ---
 
 ## Session Persistence
 
 ```
 Session{
-    ClaudeSessionID string    // passed as --resume <id> to claude CLI
-    LastUsed        time.Time
+    ClaudeSessionID   string    // passed as --resume <id> to claude CLI
+    LastUsed          time.Time
+    ModelOverride     string    // optional --model override for this session
+    TotalCostUSD      float64   // accumulated cost across all turns
+    TotalInputTokens  int       // accumulated input token count
+    TotalOutputTokens int       // accumulated output token count
 }
 ```
 
@@ -447,6 +476,9 @@ This means:
 - **Restart lazycoding** → sessions reload → Claude context is preserved.
 - **`/reset`** → `store.Delete(sessionKey)` → Claude starts a fresh session.
 - **Session file manually deleted** → all conversations start fresh (no harm done).
+- **`/model <name>`** → `session.ModelOverride = name` → applied as `--model` flag on every subsequent request (replaces any existing `--model` in config `extra_flags`)
+- **`/cost`** → reads `TotalCostUSD`, `TotalInputTokens`, `TotalOutputTokens` from session
+- Session save is now **read-modify-write** (preserves all fields including `ModelOverride` and usage counters across turns)
 
 ### Session Key
 

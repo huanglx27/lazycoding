@@ -265,13 +265,17 @@ journalctl -fu lazycoding
 
 | 命令 | 说明 |
 |------|------|
-| `/start` | 欢迎语 + 当前工作目录 |
-| `/workdir` | 显示当前对话绑定的工作目录（兼查 chat\_id） |
-| `/session` | 显示当前 Claude 会话 ID（调试用） |
-| `/cancel` | 停止当前任务，**保留会话历史**（可继续对话） |
+| `/start` | 欢迎消息 + 当前工作目录 |
+| `/workdir` | 显示本会话绑定的工作目录（同时显示 chat\_id） |
+| `/session` | 显示当前 Claude 会话 ID（用于调试） |
+| `/status` | 显示 Claude 正在执行的内容——已调用的工具和已输出的文字 |
+| `/cancel` | 停止当前任务——**会话历史保留** |
 | `/reset` | 停止当前任务 + **清除会话历史**，重新开始 |
+| `/compact [说明]` | 压缩会话上下文以节省空间；可附加可选的聚焦提示 |
+| `/model [模型名]` | 查看当前模型，或切换到其他模型（如 `claude-opus-4-6`） |
+| `/cost` | 显示本会话的累计 token 用量和估算费用 |
 | `/download <路径>` | 从工作目录下载文件到 Telegram |
-| `/help` | 显示命令列表 |
+| `/help` | 显示命令参考 |
 
 ---
 
@@ -314,6 +318,20 @@ Bot：分析结果：…
 Bot：⏳ thinking…   ← 开始处理排队的消息
 Bot：依赖检查：…
 ```
+
+### 工具调用展示
+
+Claude 执行工具时，聊天窗口以易读格式实时显示，而非原始 JSON：
+
+```
+🔧 Read: src/payment/handler.go
+🔧 Edit: src/payment/handler.go
+🔧 Bash: go test ./...
+🔧 AskUserQuestion: 是否同时更新集成测试？
+🔧 TodoWrite: (3 todos)
+```
+
+文件路径显示为相对于工作目录的相对路径。终端 verbose 日志中也采用相同格式。
 
 ---
 
@@ -569,3 +587,12 @@ transcription:
 
 **问：收到"Session contains expired thinking-block signatures"错误**
 → 这是 Claude 扩展思考模式的会话签名过期导致的。发送 `/reset` 开启新会话即可。
+
+**Q: 如何在会话中途切换 Claude 模型？**
+→ 发送 `/model claude-opus-4-6`（或其他 Claude 模型 ID）。切换结果以 session 为单位存储，下条消息生效。不带参数发送 `/model` 可查看当前模型。`/reset` 会同时清除模型覆盖和会话历史。
+
+**Q: 如何查看 token 用量和费用？**
+→ 发送 `/cost`。数据从每次 Claude 响应中累计，跨重启持久化。费用数字直接来自 Claude Code 的计费输出。
+
+**Q: 任务进行中能查看 Claude 的进度吗？**
+→ 可以——随时发送 `/status`。bot 会发一条新消息，内容与聊天窗口当前占位消息完全一致（工具列表 + 已输出文字），不影响正在进行的任务。

@@ -147,7 +147,7 @@ type Agent interface {
 | `EventKindText` | `Text` | Claude 增量文本输出 |
 | `EventKindToolUse` | `ToolName`、`ToolInput`、`ToolUseID` | Claude 调用工具 |
 | `EventKindToolResult` | `ToolUseID`、`ToolResult` | 工具返回结果 |
-| `EventKindResult` | `SessionID`、`Text` | 最终事件；会话 ID 可能更新 |
+| `EventKindResult` | `SessionID`、`Text`、`Usage` | 最终事件；session ID 可能更新；Usage 携带 token 计数和费用 |
 | `EventKindError` | `Err` | 不可恢复错误（超时、崩溃等） |
 
 ---
@@ -281,6 +281,23 @@ Telegram 更新到达
 | `EventKindToolResult` | 在工具条目下追加截断后的输出 |
 | `EventKindResult` | 最终刷新、`Seal`、可选快捷回复键盘；若内容 > 4096 字符：原消息保留工具摘要，回复文本另发新消息 |
 | `EventKindError` | `Seal` + 发送错误消息；若为 thinking-signature 错误，提示用户执行 `/reset` |
+
+### 工具输入格式化
+
+`formatToolInput(toolName, input, workDir string) string`（定义于 `convlog.go`，同时用于终端 verbose 日志和 Telegram 消息构建）按工具类型从原始 JSON 中提取可读摘要：
+
+| 工具 | 展示内容 |
+|------|---------|
+| `Read` / `Write` / `Edit` | 相对于 `workDir` 的路径；仍超 80 字符则显示末尾 3 段（加 `…/` 前缀） |
+| `Bash` | 完整命令（最多 200 字符） |
+| `Glob` | pattern + 缩短的目录路径 |
+| `Grep` | pattern + 可选 glob 过滤 + 缩短的路径 |
+| `WebFetch` | URL（最多 120 字符） |
+| `WebSearch` | 查询字符串 |
+| `Task` | 描述（最多 120 字符） |
+| `AskUserQuestion` | 第一个问题文本（最多 120 字符） |
+| `TodoWrite` | `(N todos)` |
+| 其他 | 截断的原始 JSON（最多 160 字符） |
 
 **消息长度限制：** Telegram 单条消息上限 4096 字节。收到 `EventKindResult` 时，若工具摘要加上回复文本超过 4096 字符，工具摘要更新到原占位消息，完整回复文本通过 `Split` 另发新消息（自动按 UTF-8 字符边界分割，不截断）。`UpdateText` 仍使用 `Truncate`（节流更新期间）。两者均在 UTF-8 字符边界处操作，不会切断多字节字符（如中文、Emoji）。
 
@@ -429,16 +446,34 @@ pendingState.queue                        由 pendingState.mu（内锁）保护
 
 当消息在 Claude 运行时到达，会被入队，同时立即回复 `⏳ 已排队，将在当前任务完成后处理。`，用户不会因没有回应而产生疑惑。
 
+### `/status` 查询
+
+`Lazycoding` 结构体新增 `runningStatus sync.Map`（key = `sessionKey`，value = 当前渲染的 HTML 内容）：
+
+1. `consumeStream` **启动时立即写入** `"(thinking…)"`，确保任何事件到来之前就有快照
+2. **每次 `doFlush` 后更新**为最新内容（工具列表 + 已累积文字）
+3. `consumeStream` 退出时通过 `defer` 删除
+
+`/status` 命令读取此 map，将快照以新消息发出，用户可随时查看任务进度，不影响正在进行的占位消息。
+
 ---
 
 ## Session 持久化设计
 
 ```
 Session{
-    ClaudeSessionID string    // 以 --resume <id> 传给 claude CLI
-    LastUsed        time.Time
+    ClaudeSessionID   string    // 作为 --resume <id> 传给 claude CLI
+    LastUsed          time.Time
+    ModelOverride     string    // 本 session 的模型覆盖（可选）
+    TotalCostUSD      float64   // 累计费用（跨多轮）
+    TotalInputTokens  int       // 累计输入 token 数
+    TotalOutputTokens int       // 累计输出 token 数
 }
 ```
+
+- **`/model <name>`** → `session.ModelOverride = name` → 每次请求以 `--model` flag 形式传入（替换 config `extra_flags` 中已有的 `--model`）
+- **`/cost`** → 读取 session 中的 `TotalCostUSD`、`TotalInputTokens`、`TotalOutputTokens`
+- session 保存改为**读-改-写**模式，确保 `ModelOverride`、usage 计数等字段跨轮次保留
 
 `FileStore` 在每次 `Set` 或 `Delete` 时写穿到 `~/.lazycoding/sessions.json`（写穿缓存策略）。启动时 `NewFileStore` 读取文件；文件损坏或不存在时从空 map 开始，不会崩溃。
 

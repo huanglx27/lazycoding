@@ -261,8 +261,12 @@ journalctl -fu lazycoding
 | `/start` | Welcome message + current work directory |
 | `/workdir` | Show the work directory bound to this conversation (also shows chat\_id) |
 | `/session` | Show the current Claude session ID (for debugging) |
+| `/status` | Show what Claude is doing right now — tool calls and output so far |
 | `/cancel` | Stop the current task — **session history is kept** |
 | `/reset` | Stop current task + **clear session history**, start fresh |
+| `/compact [instructions]` | Compress the session context to save space; optional focus hint |
+| `/model [name]` | Show the current model, or switch to a different one (e.g. `claude-opus-4-6`) |
+| `/cost` | Show cumulative token usage and estimated cost for this session |
 | `/download <path>` | Download a file from the work directory to Telegram |
 | `/help` | Show command reference |
 
@@ -307,6 +311,20 @@ Bot: Analysis: …
 Bot: ⏳ thinking…   ← starts the queued request
 Bot: Dependencies: …
 ```
+
+### Tool call display
+
+As Claude works, each tool call is shown inline with a human-readable summary instead of raw JSON:
+
+```
+🔧 Read: src/payment/handler.go
+🔧 Edit: src/payment/handler.go
+🔧 Bash: go test ./...
+🔧 AskUserQuestion: Should I also update the integration tests?
+🔧 TodoWrite: (3 todos)
+```
+
+File paths are shown relative to the work directory. The same formatting is used in the terminal verbose log.
 
 ---
 
@@ -560,6 +578,15 @@ command:   /download src/main.go
 If lazycoding already has a stored session, that takes priority. Run `/reset` to clear it and let auto-discovery pick up the latest local session.
 
 Note: do not use both simultaneously (local CLI + Telegram) for the same session; two concurrent invocations writing to the same session can produce unpredictable results.
+
+**Q: How do I switch Claude models mid-session?**
+→ Use `/model claude-opus-4-6` (or any Claude model ID). The override is stored per session and takes effect on the next message. Use `/model` with no arguments to see the current model. `/reset` clears the override along with the session history.
+
+**Q: How do I see token usage and cost?**
+→ Send `/cost`. Usage is accumulated from every Claude turn in the session and persists across bot restarts. The cost figure comes directly from Claude Code's own accounting.
+
+**Q: Can I check what Claude is doing mid-task?**
+→ Yes — send `/status` at any time. The bot replies with the current tool call list and any text Claude has produced so far, identical to what is shown in the live placeholder message.
 
 **Q: "Session contains expired thinking-block signatures" error**
 → This happens when Claude's extended thinking session has expired signature data. Send `/reset` to start a fresh session.
