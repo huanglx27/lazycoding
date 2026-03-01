@@ -279,7 +279,7 @@ func (lc *Lazycoding) handleMessage(ctx context.Context, ev channel.InboundEvent
 	lc.ch.SendTyping(ctx, ev.ConversationID) //nolint:errcheck
 
 	// Resolve per-channel settings.
-	workDir := lc.cfg.WorkDirFor(ev.ConversationID)
+	workDir := lc.currentDir(ev.ConversationID)
 	extraFlags := lc.cfg.ExtraFlagsFor(ev.ConversationID)
 
 	// Look up the ongoing Claude session, keyed by work directory (or conversation
