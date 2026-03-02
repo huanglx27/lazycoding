@@ -258,7 +258,7 @@ journalctl -fu lazycoding
 
 ## Feishu setup
 
-Feishu uses a webhook model instead of long polling. The bot must be reachable from Feishu's servers (a public IP or a tunnel like ngrok/frp).
+Feishu defaults to **WebSocket long-connection mode** — the bot connects outbound to Feishu, so it works behind NAT/firewall with no public IP or port-forwarding needed (same as Telegram).
 
 ### Step 1 – Create a Feishu app
 
@@ -276,9 +276,9 @@ Feishu uses a webhook model instead of long polling. The bot must be reachable f
 feishu:
   app_id: "cli_xxxxxxxxxx"
   app_secret: "your-app-secret"
-  webhook_path: "/feishu"   # default
-  listen_addr: ":8080"      # default
-  encrypt_key: ""           # optional AES event encryption key
+  # Default: WebSocket mode — no public IP needed (same as Telegram)
+  # Set use_webhook: true only for server deployments with a public IP
+  use_webhook: false
 
 claude:
   work_dir: "/Users/yourname/projects/my-project"
@@ -289,35 +289,19 @@ log:
   level: "info"
 ```
 
-When `feishu.app_id` is set, lazycoding starts an HTTP server and handles Feishu webhooks instead of Telegram polling.
-
-### Step 3 – Expose the webhook
-
-Feishu must be able to reach your machine:
-
-```bash
-# Option A: If your server has a public IP
-# Just make sure port 8080 is open
-
-# Option B: Local dev with ngrok
-ngrok http 8080
-# Set the forwarding URL (https://xxxx.ngrok.io/feishu) in the Feishu app console
-
-# Option C: frp or any reverse proxy
-```
-
-### Step 4 – Run
+### Step 3 – Run
 
 ```bash
 ./lazycoding config.yaml
-# Feishu sends a URL verification request on startup
-# You'll see: "feishu webhook listening addr=:8080 path=/feishu"
+# You'll see: "feishu ws: starting long connection (no public IP required)"
+# "feishu ws: connected"
 ```
 
 ### Feishu limitations vs Telegram
 
 | Feature | Telegram | Feishu |
 |---------|----------|--------|
+| Public IP required | ❌ Not needed | ❌ Not needed |
 | Voice input | ✅ Supported | ❌ Not yet (Feishu audio download pending) |
 | File upload → project dir | ✅ Supported | ❌ Not yet |
 | Inline cancel button | ✅ | ✅ |
@@ -663,7 +647,7 @@ Note: do not use both simultaneously (local CLI + Telegram) for the same session
 → Yes — send `/status` at any time. The bot replies with the current tool call list and any text Claude has produced so far, identical to what is shown in the live placeholder message.
 
 **Q: Can I use Feishu instead of Telegram?**
-→ Yes. Set `feishu.app_id` and `feishu.app_secret` in config.yaml (and remove or leave blank `telegram.token`). lazycoding automatically selects the Feishu adapter. The bot uses interactive cards for streaming output instead of Telegram's edit-in-place messages.
+→ Yes. Set `feishu.app_id` and `feishu.app_secret` in config.yaml. By default lazycoding uses WebSocket long-connection mode (no public IP needed). The bot uses interactive cards for streaming output instead of Telegram's edit-in-place messages.
 
 **Q: Can I run both Telegram and Feishu at the same time?**
 → Yes. Set both `feishu.app_id` and `telegram.token` in the same config file. lazycoding starts both adapters simultaneously and fans their events into one pipeline. Sessions and queuing are fully independent per conversation.

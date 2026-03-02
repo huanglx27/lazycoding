@@ -265,7 +265,7 @@ journalctl -fu lazycoding
 
 ## 飞书接入
 
-飞书采用 Webhook 推送模式（而非长轮询），机器人必须能被飞书服务器访问（公网 IP 或 ngrok/frp 等内网穿透工具）。
+飞书默认使用 **WebSocket 长连接模式**——bot 主动向飞书建立连接，和 Telegram 长轮询完全对等，本地开发**无需公网 IP 或内网穿透工具**。
 
 ### 第一步：创建飞书自建应用
 
@@ -283,9 +283,9 @@ journalctl -fu lazycoding
 feishu:
   app_id: "cli_xxxxxxxxxx"
   app_secret: "your-app-secret"
-  webhook_path: "/feishu"   # 默认值
-  listen_addr: ":8080"      # 默认值
-  encrypt_key: ""           # 可选：飞书 AES 事件加密密钥
+  # 默认 WebSocket 模式，无需公网 IP（和 Telegram 一样）
+  # 仅服务器部署有公网 IP 时才需要设置 use_webhook: true
+  use_webhook: false
 
 claude:
   work_dir: "/Users/yourname/projects/my-project"
@@ -296,35 +296,20 @@ log:
   level: "info"
 ```
 
-配置了 `feishu.app_id` 时，lazycoding 自动启动 HTTP 服务器接收飞书 Webhook，不再使用 Telegram 长轮询。
-
-### 第三步：暴露 Webhook 端口
-
-飞书服务器需能访问你的机器：
-
-```bash
-# 方案 A：服务器有公网 IP
-# 确保 8080 端口对外开放即可
-
-# 方案 B：本地开发用 ngrok
-ngrok http 8080
-# 将 https://xxxx.ngrok.io/feishu 填入飞书控制台的事件订阅请求地址
-
-# 方案 C：frp 或其他反向代理
-```
-
-### 第四步：启动
+### 第三步：启动
 
 ```bash
 ./lazycoding config.yaml
-# 启动时飞书会发送一次 URL 验证请求
-# 看到如下日志说明成功：feishu webhook listening addr=:8080 path=/feishu
+# 看到如下日志说明成功：
+# feishu ws: starting long connection (no public IP required)
+# feishu ws: connected
 ```
 
 ### 飞书与 Telegram 功能对比
 
 | 功能 | Telegram | 飞书 |
 |------|----------|------|
+| 需要公网 IP | ❌ 不需要 | ❌ 不需要 |
 | 语音输入 | ✅ | ❌ 暂未支持（飞书音频下载待实现） |
 | 文件上传到项目目录 | ✅ | ❌ 暂未支持 |
 | 内联取消按钮 | ✅ | ✅ |
@@ -660,7 +645,7 @@ transcription:
 注意：不要同时在本地 CLI 和 Telegram 使用同一个会话，两个并发调用写入同一会话可能产生不可预期的结果。
 
 **Q: 可以用飞书代替 Telegram 吗？**
-→ 可以。在 config.yaml 中填写 `feishu.app_id` 和 `feishu.app_secret`（`telegram.token` 留空或删除）。lazycoding 会自动选择飞书 adapter，用互动卡片代替 Telegram 的原地编辑消息实现流式输出效果。
+→ 可以。在 config.yaml 中填写 `feishu.app_id` 和 `feishu.app_secret`。默认使用 WebSocket 长连接模式，无需公网 IP，和 Telegram 长轮询体验相同。lazycoding 用互动卡片代替 Telegram 的原地编辑消息实现流式输出效果。
 
 **Q: 能同时运行 Telegram 和飞书吗？**
 → 支持。在同一个 config.yaml 中同时填写 `feishu.app_id` 和 `telegram.token`，lazycoding 会同时启动两个 adapter，将事件汇聚到同一个处理流水线。每个对话的 session 和消息队列完全独立。

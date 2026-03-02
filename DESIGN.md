@@ -431,16 +431,21 @@ pendingState.queue                        guarded by pendingState.mu (inner lock
 
 The Feishu adapter differs from the Telegram adapter in the following ways:
 
-| Aspect | Telegram | Feishu |
-|--------|----------|--------|
-| Event delivery | Long polling (`getUpdates`) | HTTP webhook (push) |
-| Server started in | `Events()` goroutine | `Events()` starts `http.Server` |
-| Message format | Telegram HTML (parse_mode=HTML) | Lark Markdown inside interactive card |
-| Editing messages | `editMessageText` | PATCH `/im/v1/messages/{id}` |
-| Token management | Static bot token | `tenant_access_token` (2h TTL, auto-refresh) |
-| Event deduplication | Not needed (Telegram guarantees) | `seen map[eventID]time.Time`, cleaned every 5 min |
-| AES decryption | N/A | Optional; sha256(encrypt_key) as AES-256-CBC key |
-| Voice/file events | Fully handled | Silently ignored (pending implementation) |
+| Aspect | Telegram | Feishu (default) | Feishu (webhook mode) |
+|--------|----------|------------------|----------------------|
+| Event delivery | Long polling (`getUpdates`) | WebSocket long connection | HTTP webhook (push) |
+| Public IP required | ❌ No | ❌ No | ✅ Yes |
+| Server started in | `Events()` starts poll loop | `Events()` dials `wss://` | `Events()` starts `http.Server` |
+| Message format | Telegram HTML (parse_mode=HTML) | Lark Markdown inside interactive card | Lark Markdown inside interactive card |
+| Editing messages | `editMessageText` | PATCH `/im/v1/messages/{id}` | PATCH `/im/v1/messages/{id}` |
+| Token management | Static bot token | `tenant_access_token` (2h TTL, auto-refresh) | `tenant_access_token` (2h TTL, auto-refresh) |
+| Event deduplication | Not needed (Telegram guarantees) | `seen map[eventID]time.Time`, cleaned every 5 min | `seen map[eventID]time.Time`, cleaned every 5 min |
+| AES decryption | N/A | N/A | Optional; sha256(encrypt_key) as AES-256-CBC key |
+| Voice/file events | Fully handled | Silently ignored (pending implementation) | Silently ignored (pending implementation) |
+
+**WebSocket mode (default):** The adapter calls `POST /callback/ws/endpoint` with app credentials to obtain a `wss://` URL (containing `device_id` and `service_id` query params), then dials it with `gorilla/websocket`. Frames are binary protobuf (hand-rolled encoder/decoder; no SDK dependency). `method=0` = control (ping/pong), `method=1` = data (events). Pings are sent every `ClientConfig.PingInterval` seconds (default 120s). Each event frame is ACK'd with a response frame (`payload={"code":200}`). On disconnect, the adapter reconnects with exponential backoff (2s → 60s cap).
+
+**Webhook mode (`use_webhook: true`):** The adapter starts an HTTP server; Feishu pushes events to it. Requires a public IP or tunnel (ngrok/frp). Supports optional AES-CBC-256 event decryption.
 
 **Card format:** Feishu messages are sent as interactive cards with a `lark_md` div element for the markdown content and an optional `action` element for buttons. `UpdateText` calls PATCH to update the card's content in-place, producing the same streaming-feel as Telegram's `editMessageText`.
 

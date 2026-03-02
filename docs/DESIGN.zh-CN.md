@@ -429,16 +429,21 @@ pendingState.queue                        由 pendingState.mu（内锁）保护
 
 飞书 adapter 与 Telegram adapter 的主要差异：
 
-| 维度 | Telegram | 飞书 |
-|------|----------|------|
-| 事件推送方式 | 长轮询（`getUpdates`） | HTTP Webhook（推送） |
-| 服务器启动方式 | `Events()` 内部启动轮询 goroutine | `Events()` 启动 `http.Server` |
-| 消息格式 | Telegram HTML（parse_mode=HTML） | Lark Markdown 包裹在互动卡片中 |
-| 编辑消息 | `editMessageText` | PATCH `/im/v1/messages/{id}` |
-| Token 管理 | 静态 Bot Token | `tenant_access_token`（2h TTL，自动刷新） |
-| 事件去重 | 不需要（Telegram 保证） | `seen map[eventID]time.Time`，每 5 分钟清理 |
-| AES 解密 | 无 | 可选；以 sha256(encrypt_key) 为 AES-256-CBC 密钥 |
-| 语音/文件事件 | 完整支持 | 暂时忽略（待实现） |
+| 维度 | Telegram | 飞书（默认） | 飞书（Webhook 模式） |
+|------|----------|------------|-------------------|
+| 事件推送方式 | 长轮询（`getUpdates`） | WebSocket 长连接 | HTTP Webhook（推送） |
+| 需要公网 IP | ❌ 不需要 | ❌ 不需要 | ✅ 需要 |
+| 服务器启动方式 | `Events()` 内部启动轮询 goroutine | `Events()` 主动拨号 `wss://` | `Events()` 启动 `http.Server` |
+| 消息格式 | Telegram HTML（parse_mode=HTML） | Lark Markdown 包裹在互动卡片中 | Lark Markdown 包裹在互动卡片中 |
+| 编辑消息 | `editMessageText` | PATCH `/im/v1/messages/{id}` | PATCH `/im/v1/messages/{id}` |
+| Token 管理 | 静态 Bot Token | `tenant_access_token`（2h TTL，自动刷新） | `tenant_access_token`（2h TTL，自动刷新） |
+| 事件去重 | 不需要（Telegram 保证） | `seen map[eventID]time.Time`，每 5 分钟清理 | `seen map[eventID]time.Time`，每 5 分钟清理 |
+| AES 解密 | 无 | 无 | 可选；以 sha256(encrypt_key) 为 AES-256-CBC 密钥 |
+| 语音/文件事件 | 完整支持 | 暂时忽略（待实现） | 暂时忽略（待实现） |
+
+**WebSocket 模式（默认）：** adapter 调用 `POST /callback/ws/endpoint` 传入 app_id+app_secret，获取 `wss://` URL（含 `device_id`、`service_id` query param），再用 `gorilla/websocket` 主动拨号。帧格式为 protobuf 二进制（手写编解码器，不引入官方 SDK）。`method=0` = 控制帧（ping/pong），`method=1` = 数据帧（事件）。按 `ClientConfig.PingInterval`（默认 120s）发送 ping。每个事件帧立即回复 ACK（`payload={"code":200}`）。断线后指数退避重连（2s → 60s 上限）。
+
+**Webhook 模式（`use_webhook: true`）：** adapter 启动 HTTP 服务器，飞书主动推事件。需要公网 IP 或内网穿透工具（ngrok/frp）。支持可选的 AES-CBC-256 事件解密。
 
 **卡片格式：** 飞书消息以互动卡片形式发送，包含一个 `lark_md` div 元素（承载 Markdown 内容）和可选的 `action` 元素（承载按钮）。`UpdateText` 通过 PATCH 接口原地更新卡片内容，实现与 Telegram `editMessageText` 相同的流式效果。
 
