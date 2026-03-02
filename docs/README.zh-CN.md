@@ -2,7 +2,7 @@
 
 [English](../README.md) · [简体中文](README.zh-CN.md)
 
-**用手机通过 Telegram 操控本地 Claude Code。**
+**用手机通过 Telegram 或飞书操控本地 Claude Code。**
 
 发一条消息，就能写代码、修 bug、管理多个项目。lazycoding 运行在你的机器上，把 Telegram 与本地 `claude` CLI 打通，每一次工具调用、每一行输出都实时回显到聊天窗口。
 
@@ -10,7 +10,7 @@
 你（随时随地，任意设备）
         │  "重构支付模块并补充测试"
         ▼
-   Telegram
+   Telegram  ─或─  飞书（Feishu/Lark）
         │
         ▼
    lazycoding  ← 运行在你的开发机上
@@ -19,7 +19,7 @@
    Claude Code  ← 读写文件、执行命令、生成代码
         │
         ▼
-   流式输出 → 实时回显到 Telegram 聊天窗口
+   流式输出 → 实时回显到聊天窗口
 ```
 
 ---
@@ -50,6 +50,7 @@
 - [快速上手](#快速上手)
 - [编译](#编译)
 - [第一步：创建 Telegram Bot](#第一步创建-telegram-bot)
+- [飞书接入](#飞书接入)
 - [第二步：基础配置](#第二步基础配置)
 - [第三步：获取 chat\_id](#第三步获取-chat_id)
 - [第四步：配置多工程映射](#第四步配置多工程映射)
@@ -71,6 +72,7 @@
 | Go 1.21+ | 仅编译需要，运行时不依赖 Go 环境 |
 | `claude` CLI | 已登录，`claude --version` 可正常输出 |
 | Telegram Bot Token | 从 @BotFather 申请，免费，2 分钟搞定 |
+| 飞书机器人凭据 | 可选——从 [open.feishu.cn](https://open.feishu.cn) 获取 App ID + App Secret |
 
 验证 claude CLI 可用：
 
@@ -258,6 +260,78 @@ WantedBy=multi-user.target
 systemctl enable --now lazycoding
 journalctl -fu lazycoding
 ```
+
+---
+
+## 飞书接入
+
+飞书采用 Webhook 推送模式（而非长轮询），机器人必须能被飞书服务器访问（公网 IP 或 ngrok/frp 等内网穿透工具）。
+
+### 第一步：创建飞书自建应用
+
+1. 前往 [open.feishu.cn/app](https://open.feishu.cn/app) → **创建企业自建应用**
+2. 在**凭证与基础信息**页面记录 **App ID** 和 **App Secret**
+3. 在**权限管理**中添加 `im:message`（收发消息）和 `im:message.group_at_msg`（群组@机器人）权限
+4. 在**事件订阅**中设置请求地址为 `http://<你的域名或IP>:8080/feishu`
+   - 添加事件：`im.message.receive_v1`（接收消息）
+   - 添加事件：`im.message.action.trigger_v1`（接收卡片按钮点击）
+5. 在**机器人**标签页开启机器人功能
+
+### 第二步：配置 lazycoding
+
+```yaml
+feishu:
+  app_id: "cli_xxxxxxxxxx"
+  app_secret: "your-app-secret"
+  webhook_path: "/feishu"   # 默认值
+  listen_addr: ":8080"      # 默认值
+  encrypt_key: ""           # 可选：飞书 AES 事件加密密钥
+
+claude:
+  work_dir: "/Users/yourname/projects/my-project"
+  timeout_sec: 900
+
+log:
+  format: "text"
+  level: "info"
+```
+
+配置了 `feishu.app_id` 时，lazycoding 自动启动 HTTP 服务器接收飞书 Webhook，不再使用 Telegram 长轮询。
+
+### 第三步：暴露 Webhook 端口
+
+飞书服务器需能访问你的机器：
+
+```bash
+# 方案 A：服务器有公网 IP
+# 确保 8080 端口对外开放即可
+
+# 方案 B：本地开发用 ngrok
+ngrok http 8080
+# 将 https://xxxx.ngrok.io/feishu 填入飞书控制台的事件订阅请求地址
+
+# 方案 C：frp 或其他反向代理
+```
+
+### 第四步：启动
+
+```bash
+./lazycoding config.yaml
+# 启动时飞书会发送一次 URL 验证请求
+# 看到如下日志说明成功：feishu webhook listening addr=:8080 path=/feishu
+```
+
+### 飞书与 Telegram 功能对比
+
+| 功能 | Telegram | 飞书 |
+|------|----------|------|
+| 语音输入 | ✅ | ❌ 暂未支持（飞书音频下载待实现） |
+| 文件上传到项目目录 | ✅ | ❌ 暂未支持 |
+| 内联取消按钮 | ✅ | ✅ |
+| 快捷回复 Yes/No 按钮 | ✅ | ✅ |
+| 消息队列 | ✅ | ✅ |
+| 流式编辑 | ✅ | ✅（互动卡片） |
+| `/download` 文件下载 | ✅ | ✅ |
 
 ---
 
@@ -584,6 +658,12 @@ transcription:
 如果 lazycoding 已有 stored session，优先使用自己的。运行 `/reset` 清除后，下次会自动发现最新的本地会话。
 
 注意：不要同时在本地 CLI 和 Telegram 使用同一个会话，两个并发调用写入同一会话可能产生不可预期的结果。
+
+**Q: 可以用飞书代替 Telegram 吗？**
+→ 可以。在 config.yaml 中填写 `feishu.app_id` 和 `feishu.app_secret`（`telegram.token` 留空或删除）。lazycoding 会自动选择飞书 adapter，用互动卡片代替 Telegram 的原地编辑消息实现流式输出效果。
+
+**Q: 能同时运行 Telegram 和飞书吗？**
+→ 单个进程不支持。可以用两个不同的 config 文件启动两个实例，如果需要共享上下文，指向同一个 session 文件即可。
 
 **问：收到"Session contains expired thinking-block signatures"错误**
 → 这是 Claude 扩展思考模式的会话签名过期导致的。发送 `/reset` 开启新会话即可。

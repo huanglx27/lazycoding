@@ -13,10 +13,20 @@ import (
 // Config is the root configuration structure.
 type Config struct {
 	Telegram      TelegramConfig            `yaml:"telegram"`
+	Feishu        FeishuConfig              `yaml:"feishu"`
 	Claude        ClaudeConfig              `yaml:"claude"`
-	Channels      map[string]*ChannelConfig `yaml:"channels"` // key = Telegram chat ID (string)
+	Channels      map[string]*ChannelConfig `yaml:"channels"` // key = chat ID string
 	Transcription TranscriptionConfig       `yaml:"transcription"`
 	Log           LogConfig                 `yaml:"log"`
+}
+
+// FeishuConfig holds Feishu/Lark bot settings.
+type FeishuConfig struct {
+	AppID       string `yaml:"app_id"`
+	AppSecret   string `yaml:"app_secret"`
+	EncryptKey  string `yaml:"encrypt_key"`  // optional AES event encryption key
+	WebhookPath string `yaml:"webhook_path"` // HTTP path, default "/feishu"
+	ListenAddr  string `yaml:"listen_addr"`  // e.g. ":8080"
 }
 
 // TelegramConfig holds Telegram-specific settings.
@@ -116,6 +126,12 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Channels == nil {
 		cfg.Channels = make(map[string]*ChannelConfig)
+	}
+	if cfg.Feishu.WebhookPath == "" {
+		cfg.Feishu.WebhookPath = "/feishu"
+	}
+	if cfg.Feishu.ListenAddr == "" {
+		cfg.Feishu.ListenAddr = ":8080"
 	}
 	// Defaults for whisper-cpp sub-config.
 	if cfg.Transcription.WhisperCPP.Bin == "" {

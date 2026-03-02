@@ -4,7 +4,7 @@
 
 Claude Code is a powerful agentic coding tool, but it's bound to a terminal on your development machine. The moment you step away from your desk, you lose access.
 
-lazycoding removes that constraint. It is a **local gateway process** that exposes Claude Code to any Telegram conversation. The design follows three principles:
+lazycoding removes that constraint. It is a **local gateway process** that exposes Claude Code to any Telegram or Feishu conversation. The design follows three principles:
 
 1. **Locality** — Claude Code runs on *your* machine with full access to *your* filesystem. No cloud intermediary touches your source code.
 2. **Multiplexing** — one bot process serves many projects. Each Telegram conversation maps to one project directory; conversations are fully isolated from each other.
@@ -23,7 +23,7 @@ lazycoding removes that constraint. It is a **local gateway process** that expos
 │  │                                                      │  │
 │  │  ┌────────────┐   ┌───────────┐   ┌──────────────┐  │  │
 │  │  │  channel/  │   │lazycoding │   │    agent/    │  │  │
-│  │  │  telegram  │◄──│    core   │──►│    claude    │  │  │
+│  │  │ tg|feishu  │◄──│    core   │──►│    claude    │  │  │
 │  │  │  adapter   │   │(dispatch) │   │   runner     │  │  │
 │  │  └────────────┘   └───────────┘   └──────────────┘  │  │
 │  │        │               │                  │           │  │
@@ -33,8 +33,8 @@ lazycoding removes that constraint. It is a **local gateway process** that expos
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
          ▲                                     ▼
-    Telegram API                          Project files
-  (polling over HTTPS)                  /path/to/project/
+  Telegram API (polling)               Project files
+  Feishu webhook (HTTP)               /path/to/project/
 ```
 
 ---
@@ -67,6 +67,10 @@ internal/
                             inline keyboard send/answer, SendDocument
       renderer.go           Markdown→HTML conversion, table rendering,
                             UTF-8-safe Split / Truncate
+    feishu/
+      adapter.go            Feishu webhook server, interactive card send/patch,
+                            token management, AES event decryption, SendDocument
+      renderer.go           Telegram HTML → Lark Markdown conversion, SplitText
 
   transcribe/
     transcribe.go           Transcriber interface, Config, New() factory
@@ -107,7 +111,7 @@ type Channel interface {
 
 | Field            | Description |
 |------------------|-------------|
-| `UserKey`        | `"tg:{userID}"` — sender identity |
+| `UserKey`        | `"tg:{userID}"` (Telegram) or `"fs:{openID}"` (Feishu) — sender identity |
 | `ConversationID` | Telegram chat ID string — which project context to use |
 | `Text`           | message text; for voice messages: the transcription |
 | `IsCommand`      | true when the message starts with `/` |
@@ -423,6 +427,27 @@ pendingState.queue                        guarded by pendingState.mu (inner lock
 
 ---
 
+## Feishu Adapter
+
+The Feishu adapter differs from the Telegram adapter in the following ways:
+
+| Aspect | Telegram | Feishu |
+|--------|----------|--------|
+| Event delivery | Long polling (`getUpdates`) | HTTP webhook (push) |
+| Server started in | `Events()` goroutine | `Events()` starts `http.Server` |
+| Message format | Telegram HTML (parse_mode=HTML) | Lark Markdown inside interactive card |
+| Editing messages | `editMessageText` | PATCH `/im/v1/messages/{id}` |
+| Token management | Static bot token | `tenant_access_token` (2h TTL, auto-refresh) |
+| Event deduplication | Not needed (Telegram guarantees) | `seen map[eventID]time.Time`, cleaned every 5 min |
+| AES decryption | N/A | Optional; sha256(encrypt_key) as AES-256-CBC key |
+| Voice/file events | Fully handled | Silently ignored (pending implementation) |
+
+**Card format:** Feishu messages are sent as interactive cards with a `lark_md` div element for the markdown content and an optional `action` element for buttons. `UpdateText` calls PATCH to update the card's content in-place, producing the same streaming-feel as Telegram's `editMessageText`.
+
+**Renderer:** `TelegramHTMLToLarkMarkdown` converts the Telegram-style HTML produced by `MarkdownToTelegramHTML` (bold → `**...**`, code blocks → ` ``` `, links → `[text](url)`) into Lark Markdown. `SplitText` splits long responses at newline boundaries, respecting `MaxCardTextLen = 3000` runes.
+
+---
+
 ## Interactive Features
 
 ### Inline Cancel Button
@@ -518,8 +543,24 @@ If lazycoding already has a stored session, it takes priority (the discovered lo
 
 Implement `channel.Channel` for Slack, Discord, or any other messaging platform. The core orchestration layer, agent runner, session store, and transcription layer are all platform-agnostic. Wire the new adapter in `cmd/lazycoding/main.go`.
 
+**Built-in adapters:**
+- **Telegram** (`internal/channel/telegram`) — long-polling, voice, file upload/download, inline keyboards
+- **Feishu/Lark** (`internal/channel/feishu`) — HTTP webhook, interactive cards, AES event decryption, file upload
+
+**Adapter selection** in `cmd/lazycoding/main.go`:
 ```go
-// Example: swap Telegram for a hypothetical Slack adapter
+switch {
+case cfg.Feishu.AppID != "":
+    ch, _ = fsadapter.New(cfg)        // starts HTTP webhook server
+case cfg.Telegram.Token != "":
+    ch, _ = tgadapter.New(cfg, tr)   // starts long-polling loop
+default:
+    slog.Error("no platform configured"); os.Exit(1)
+}
+```
+
+**Adding a new adapter** (e.g. Slack):
+```go
 slackCh, _ := slack.New(cfg)
 b := lazycoding.New(slackCh, runner, store, cfg)
 b.Run(ctx)

@@ -9,6 +9,8 @@ import (
 	"syscall"
 
 	"github.com/bishenghua/lazycoding/internal/agent/claude"
+	"github.com/bishenghua/lazycoding/internal/channel"
+	fsadapter "github.com/bishenghua/lazycoding/internal/channel/feishu"
 	tgadapter "github.com/bishenghua/lazycoding/internal/channel/telegram"
 	"github.com/bishenghua/lazycoding/internal/config"
 	"github.com/bishenghua/lazycoding/internal/lazycoding"
@@ -38,12 +40,7 @@ func main() {
 	}
 	slog.SetDefault(slog.New(handler))
 
-	if cfg.Telegram.Token == "" {
-		slog.Error("telegram.token is required in config.yaml")
-		os.Exit(1)
-	}
-
-	// Build the speech-to-text transcriber (nil if disabled).
+	// Build the speech-to-text transcriber (nil if disabled; Feishu ignores it for now).
 	tr, err := transcribe.New(cfg.Transcription)
 	if err != nil {
 		slog.Error("transcription init failed", "err", err)
@@ -53,10 +50,27 @@ func main() {
 		slog.Info("transcription enabled", "backend", cfg.Transcription.Backend)
 	}
 
-	// Wire up dependencies.
-	tgCh, err := tgadapter.New(cfg, tr)
-	if err != nil {
-		slog.Error("telegram adapter init", "err", err)
+	// Select channel adapter based on config.
+	var ch channel.Channel
+	switch {
+	case cfg.Feishu.AppID != "":
+		fsCh, err := fsadapter.New(cfg)
+		if err != nil {
+			slog.Error("feishu adapter init", "err", err)
+			os.Exit(1)
+		}
+		ch = fsCh
+		slog.Info("using feishu channel")
+	case cfg.Telegram.Token != "":
+		tgCh, err := tgadapter.New(cfg, tr)
+		if err != nil {
+			slog.Error("telegram adapter init", "err", err)
+			os.Exit(1)
+		}
+		ch = tgCh
+		slog.Info("using telegram channel")
+	default:
+		slog.Error("no platform configured: set feishu.app_id or telegram.token in config.yaml")
 		os.Exit(1)
 	}
 
@@ -75,7 +89,7 @@ func main() {
 	}
 	slog.Info("session store loaded", "path", sessionFile)
 
-	b := lazycoding.New(tgCh, runner, store, cfg)
+	b := lazycoding.New(ch, runner, store, cfg)
 
 	// Graceful shutdown.
 	ctx, cancel := context.WithCancel(context.Background())

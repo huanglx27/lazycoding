@@ -2,7 +2,7 @@
 
 [English](../README.md) · [简体中文](docs/README.zh-CN.md)
 
-**Control a local Claude Code session from your phone, over Telegram.**
+**Control a local Claude Code session from your phone — over Telegram or Feishu (Lark).**
 
 Write code, fix bugs, and manage multiple projects — all by sending a message. lazycoding runs on your machine, bridges Telegram to the `claude` CLI, and streams every tool call and response back to your chat in real time.
 
@@ -10,7 +10,7 @@ Write code, fix bugs, and manage multiple projects — all by sending a message.
 You (anywhere, any device)
         │  "refactor the auth module and add tests"
         ▼
-   Telegram
+   Telegram  ─or─  Feishu (Lark)
         │
         ▼
    lazycoding  ← runs on your dev machine
@@ -19,7 +19,7 @@ You (anywhere, any device)
    Claude Code  ← reads files, runs commands, writes code
         │
         ▼
-   Streaming output → back to your Telegram chat
+   Streaming output → back to your chat in real time
 ```
 
 ---
@@ -50,6 +50,7 @@ You (anywhere, any device)
 - [Quick start](#quick-start)
 - [Build](#build)
 - [Step 1 – Create a Telegram bot](#step-1--create-a-telegram-bot)
+- [Feishu setup](#feishu-setup)
 - [Step 2 – Basic configuration](#step-2--basic-configuration)
 - [Step 3 – Find your chat\_id](#step-3--find-your-chat_id)
 - [Step 4 – Map conversations to projects](#step-4--map-conversations-to-projects)
@@ -71,6 +72,7 @@ You (anywhere, any device)
 | Go 1.21+ | Build only; the compiled binary has no runtime dependencies |
 | `claude` CLI | Must be logged in — `claude --version` should work |
 | Telegram Bot Token | Obtain from @BotFather (free, takes 2 minutes) |
+| Feishu Bot Credentials | Optional — App ID + App Secret from [open.feishu.cn](https://open.feishu.cn) |
 
 Verify the Claude CLI works:
 
@@ -251,6 +253,78 @@ WantedBy=multi-user.target
 systemctl enable --now lazycoding
 journalctl -fu lazycoding
 ```
+
+---
+
+## Feishu setup
+
+Feishu uses a webhook model instead of long polling. The bot must be reachable from Feishu's servers (a public IP or a tunnel like ngrok/frp).
+
+### Step 1 – Create a Feishu app
+
+1. Go to [open.feishu.cn/app](https://open.feishu.cn/app) → **Create app** → choose **Custom app**
+2. Note the **App ID** and **App Secret** from the **Credentials & Basic Info** tab
+3. Under **Permissions** → add `im:message` (receive/send messages) and `im:message.group_at_msg` for group bots
+4. Under **Event Subscriptions** → set the request URL to `http://<your-host>:8080/feishu`
+   - Enable event: `im.message.receive_v1` (receive messages)
+   - Enable event: `im.message.action.trigger_v1` (receive card button clicks)
+5. Under **Bot** tab → enable the bot feature
+
+### Step 2 – Configure lazycoding for Feishu
+
+```yaml
+feishu:
+  app_id: "cli_xxxxxxxxxx"
+  app_secret: "your-app-secret"
+  webhook_path: "/feishu"   # default
+  listen_addr: ":8080"      # default
+  encrypt_key: ""           # optional AES event encryption key
+
+claude:
+  work_dir: "/Users/yourname/projects/my-project"
+  timeout_sec: 900
+
+log:
+  format: "text"
+  level: "info"
+```
+
+When `feishu.app_id` is set, lazycoding starts an HTTP server and handles Feishu webhooks instead of Telegram polling.
+
+### Step 3 – Expose the webhook
+
+Feishu must be able to reach your machine:
+
+```bash
+# Option A: If your server has a public IP
+# Just make sure port 8080 is open
+
+# Option B: Local dev with ngrok
+ngrok http 8080
+# Set the forwarding URL (https://xxxx.ngrok.io/feishu) in the Feishu app console
+
+# Option C: frp or any reverse proxy
+```
+
+### Step 4 – Run
+
+```bash
+./lazycoding config.yaml
+# Feishu sends a URL verification request on startup
+# You'll see: "feishu webhook listening addr=:8080 path=/feishu"
+```
+
+### Feishu limitations vs Telegram
+
+| Feature | Telegram | Feishu |
+|---------|----------|--------|
+| Voice input | ✅ Supported | ❌ Not yet (Feishu audio download pending) |
+| File upload → project dir | ✅ Supported | ❌ Not yet |
+| Inline cancel button | ✅ | ✅ |
+| Quick-reply Yes/No buttons | ✅ | ✅ |
+| Message queuing | ✅ | ✅ |
+| Edit-in-place streaming | ✅ | ✅ (interactive card) |
+| `/download` | ✅ | ✅ |
 
 ---
 
@@ -587,6 +661,12 @@ Note: do not use both simultaneously (local CLI + Telegram) for the same session
 
 **Q: Can I check what Claude is doing mid-task?**
 → Yes — send `/status` at any time. The bot replies with the current tool call list and any text Claude has produced so far, identical to what is shown in the live placeholder message.
+
+**Q: Can I use Feishu instead of Telegram?**
+→ Yes. Set `feishu.app_id` and `feishu.app_secret` in config.yaml (and remove or leave blank `telegram.token`). lazycoding automatically selects the Feishu adapter. The bot uses interactive cards for streaming output instead of Telegram's edit-in-place messages.
+
+**Q: Can I run both Telegram and Feishu at the same time?**
+→ Not with a single process. Run two separate instances with separate config files, pointing to the same session file if you want shared context.
 
 **Q: "Session contains expired thinking-block signatures" error**
 → This happens when Claude's extended thinking session has expired signature data. Send `/reset` to start a fresh session.
