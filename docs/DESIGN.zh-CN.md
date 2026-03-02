@@ -368,14 +368,38 @@ Telegram 发来 OGG/OPUS 语音消息
 
 ## 文件上传流水线
 
+两个 adapter 都将上传的文件保存到对应会话的 `work_dir`，并通过 `InboundEvent.Text` 通知 Claude。
+
+**Telegram：**
 ```
-Telegram 文件/图片更新
+文件/图片消息
   └─ handleDocument() / handlePhoto()
        ├─ workDir = cfg.WorkDirFor(convID)
        ├─ sanitizeFilename() — 去除目录组件（防路径穿越）
        ├─ downloadFile(fileID) → workDir/<filename>
        └─ InboundEvent{Text: "[File saved to work directory: <name>]\n<caption>"}
 ```
+
+**飞书：**
+```
+file 消息  → handleFile()
+               ├─ 解析 Content JSON 中的 {"file_key","file_name"}
+               ├─ downloadResource(messageID, file_key, "file") → workDir/<filename>
+               └─ InboundEvent{Text: "[File saved to work directory: <name>]"}
+
+image 消息 → handleImage()
+               ├─ 解析 Content JSON 中的 {"image_key"}
+               ├─ downloadResource(messageID, image_key, "image") → workDir/photo_*.jpg
+               └─ InboundEvent{Text: "[File saved to work directory: <name>]"}
+
+audio 消息 → handleAudio()  （与 Telegram 语音流程相同）
+               ├─ 解析 Content JSON 中的 {"file_key"}
+               ├─ downloadResource(messageID, file_key, "file") → /tmp/lc-feishu-voice-*.ogg
+               ├─ tr.Transcribe(ctx, tmpFile) → text
+               └─ InboundEvent{Text: text, IsVoice: true}
+```
+
+`downloadResource` 调用 `GET /im/v1/messages/{message_id}/resources/{key}?type={file|image}`，携带有效的 tenant token，将响应体直接流式写入磁盘。
 
 事件文本即为发送给 Claude 的提示词——明确告知文件落地位置，Claude 无需额外指引即可操作。
 
@@ -479,7 +503,7 @@ pendingState.queue                        由 pendingState.mu（内锁）保护
 | Token 管理 | 静态 Bot Token | `tenant_access_token`（2h TTL，自动刷新） | `tenant_access_token`（2h TTL，自动刷新） |
 | 事件去重 | 不需要（Telegram 保证） | `seen map[eventID]time.Time`，每 5 分钟清理 | `seen map[eventID]time.Time`，每 5 分钟清理 |
 | AES 解密 | 无 | 无 | 可选；以 sha256(encrypt_key) 为 AES-256-CBC 密钥 |
-| 语音/文件事件 | 完整支持 | 暂时忽略（待实现） | 暂时忽略（待实现） |
+| 语音/文件/图片事件 | 完整支持 | 完整支持 | 完整支持 |
 
 **WebSocket 模式（默认）：** adapter 调用 `POST /callback/ws/endpoint` 传入 app_id+app_secret，获取 `wss://` URL（含 `device_id`、`service_id` query param），再用 `gorilla/websocket` 主动拨号。帧格式为 protobuf 二进制（手写编解码器，不引入官方 SDK）。`method=0` = 控制帧（ping/pong），`method=1` = 数据帧（事件）。按 `ClientConfig.PingInterval`（默认 120s）发送 ping。每个事件帧立即回复 ACK（`payload={"code":200}`）。断线后指数退避重连（2s → 60s 上限）。
 

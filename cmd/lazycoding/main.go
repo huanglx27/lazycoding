@@ -40,7 +40,7 @@ func main() {
 	}
 	slog.SetDefault(slog.New(handler))
 
-	// Build the speech-to-text transcriber (nil if disabled; Feishu ignores it for now).
+	// Build the speech-to-text transcriber (nil if disabled).
 	tr, err := transcribe.New(cfg.Transcription)
 	if err != nil {
 		slog.Error("transcription init failed", "err", err)
@@ -54,7 +54,7 @@ func main() {
 	var adapters []channel.Channel
 
 	if cfg.Feishu.AppID != "" {
-		fsCh, err := fsadapter.New(cfg)
+		fsCh, err := fsadapter.New(cfg, tr)
 		if err != nil {
 			slog.Error("feishu adapter init", "err", err)
 			os.Exit(1)

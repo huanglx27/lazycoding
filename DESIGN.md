@@ -370,14 +370,38 @@ The transcribed text becomes `InboundEvent.Text` with `IsVoice=true`. The orches
 
 ## File Upload Pipeline
 
+Both adapters save uploaded files to the configured `work_dir` and notify Claude via `InboundEvent.Text`.
+
+**Telegram:**
 ```
-Telegram document / photo update
+document / photo message
   └─ handleDocument() / handlePhoto()
        ├─ workDir = cfg.WorkDirFor(convID)
        ├─ sanitizeFilename() — strip directory components (path traversal prevention)
        ├─ downloadFile(fileID) → workDir/<filename>
        └─ InboundEvent{Text: "[File saved to work directory: <name>]\n<caption>"}
 ```
+
+**Feishu:**
+```
+file message  → handleFile()
+                  ├─ parse content {"file_key","file_name"} from Content JSON
+                  ├─ downloadResource(messageID, file_key, "file") → workDir/<filename>
+                  └─ InboundEvent{Text: "[File saved to work directory: <name>]"}
+
+image message → handleImage()
+                  ├─ parse content {"image_key"} from Content JSON
+                  ├─ downloadResource(messageID, image_key, "image") → workDir/photo_*.jpg
+                  └─ InboundEvent{Text: "[File saved to work directory: <name>]"}
+
+audio message → handleAudio()  (same pipeline as Telegram voice)
+                  ├─ parse content {"file_key"} from Content JSON
+                  ├─ downloadResource(messageID, file_key, "file") → /tmp/lc-feishu-voice-*.ogg
+                  ├─ tr.Transcribe(ctx, tmpFile) → text
+                  └─ InboundEvent{Text: text, IsVoice: true}
+```
+
+`downloadResource` calls `GET /im/v1/messages/{message_id}/resources/{key}?type={file|image}` with a valid tenant token and streams the response directly to disk.
 
 The event text is the prompt sent to Claude — it tells Claude exactly where the file landed so it can act on it without any additional instruction.
 
@@ -481,7 +505,7 @@ The Feishu adapter differs from the Telegram adapter in the following ways:
 | Token management | Static bot token | `tenant_access_token` (2h TTL, auto-refresh) | `tenant_access_token` (2h TTL, auto-refresh) |
 | Event deduplication | Not needed (Telegram guarantees) | `seen map[eventID]time.Time`, cleaned every 5 min | `seen map[eventID]time.Time`, cleaned every 5 min |
 | AES decryption | N/A | N/A | Optional; sha256(encrypt_key) as AES-256-CBC key |
-| Voice/file events | Fully handled | Silently ignored (pending implementation) | Silently ignored (pending implementation) |
+| Voice/file/image events | Fully handled | Fully handled | Fully handled |
 
 **WebSocket mode (default):** The adapter calls `POST /callback/ws/endpoint` with app credentials to obtain a `wss://` URL (containing `device_id` and `service_id` query params), then dials it with `gorilla/websocket`. Frames are binary protobuf (hand-rolled encoder/decoder; no SDK dependency). `method=0` = control (ping/pong), `method=1` = data (events). Pings are sent every `ClientConfig.PingInterval` seconds (default 120s). Each event frame is ACK'd with a response frame (`payload={"code":200}`). On disconnect, the adapter reconnects with exponential backoff (2s → 60s cap).
 

@@ -26,6 +26,7 @@ import (
 
 	"github.com/bishenghua/lazycoding/internal/channel"
 	"github.com/bishenghua/lazycoding/internal/config"
+	"github.com/bishenghua/lazycoding/internal/transcribe"
 )
 
 const feishuBase = "https://open.feishu.cn/open-apis"
@@ -33,7 +34,8 @@ const feishuBase = "https://open.feishu.cn/open-apis"
 // Adapter implements channel.Channel for Feishu.
 type Adapter struct {
 	cfg    *config.FeishuConfig
-	appCfg *config.Config // for WorkDirFor lookups
+	appCfg *config.Config         // for WorkDirFor lookups
+	tr     transcribe.Transcriber // nil = voice not supported
 
 	tokenMu  sync.Mutex
 	token    string
@@ -46,10 +48,12 @@ type Adapter struct {
 }
 
 // New creates a Feishu Adapter and validates credentials.
-func New(cfg *config.Config) (*Adapter, error) {
+// tr may be nil to disable voice transcription.
+func New(cfg *config.Config, tr transcribe.Transcriber) (*Adapter, error) {
 	a := &Adapter{
 		cfg:    &cfg.Feishu,
 		appCfg: cfg,
+		tr:     tr,
 		seen:   make(map[string]time.Time),
 		events: make(chan channel.InboundEvent, 16),
 	}
@@ -256,7 +260,7 @@ func (a *Adapter) dispatch(ctx context.Context, env feishuEnvelope) {
 
 	switch env.Header.EventType {
 	case "im.message.receive_v1":
-		ev, ok = a.parseMessage(env.Event)
+		ev, ok = a.parseMessage(ctx, env.Event)
 	case "im.message.action.trigger_v1":
 		ev, ok = a.parseAction(env.Event)
 	default:
@@ -273,7 +277,7 @@ func (a *Adapter) dispatch(ctx context.Context, env feishuEnvelope) {
 	}
 }
 
-func (a *Adapter) parseMessage(raw json.RawMessage) (channel.InboundEvent, bool) {
+func (a *Adapter) parseMessage(ctx context.Context, raw json.RawMessage) (channel.InboundEvent, bool) {
 	var e messageEvent
 	if err := json.Unmarshal(raw, &e); err != nil {
 		return channel.InboundEvent{}, false
@@ -316,13 +320,157 @@ func (a *Adapter) parseMessage(raw json.RawMessage) (channel.InboundEvent, bool)
 		}
 		return base, true
 
+	case "audio":
+		return a.handleAudio(ctx, e, base)
+
+	case "file":
+		return a.handleFile(ctx, e, base)
+
+	case "image":
+		return a.handleImage(ctx, e, base)
+
 	default:
-		// Unsupported message types (image, file, audio, etc.) are silently ignored
-		// in the initial implementation. Voice transcription requires Feishu-specific
-		// audio download which can be added later.
 		slog.Debug("feishu: unsupported message type", "type", e.Message.MessageType)
 		return channel.InboundEvent{}, false
 	}
+}
+
+// handleAudio downloads an audio message and transcribes it.
+func (a *Adapter) handleAudio(ctx context.Context, e messageEvent, base channel.InboundEvent) (channel.InboundEvent, bool) {
+	if a.tr == nil {
+		a.sendCard(ctx, base.ConversationID, //nolint:errcheck
+			"⚠️ Voice transcription is not enabled.\n"+
+				"Set `transcription.enabled: true` in config.yaml and restart the bot.\n\n"+
+				"Recommended (no install required):\n"+
+				"  backend: groq\n"+
+				"  groq.api_key: <get a free key at console.groq.com>", false)
+		return channel.InboundEvent{}, false
+	}
+	if e.Message.MessageID == "" {
+		return channel.InboundEvent{}, false
+	}
+	var c struct {
+		FileKey string `json:"file_key"`
+	}
+	if err := json.Unmarshal([]byte(e.Message.Content), &c); err != nil || c.FileKey == "" {
+		return channel.InboundEvent{}, false
+	}
+	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("lc-feishu-voice-%d.ogg", time.Now().UnixNano()))
+	if err := a.downloadResource(ctx, e.Message.MessageID, c.FileKey, "file", tmpFile); err != nil {
+		slog.Error("feishu audio download failed", "err", err)
+		a.sendCard(ctx, base.ConversationID, fmt.Sprintf("⚠️ Audio download failed: %v", err), false) //nolint:errcheck
+		return channel.InboundEvent{}, false
+	}
+	defer os.Remove(tmpFile)
+	text, err := a.tr.Transcribe(ctx, tmpFile)
+	if err != nil {
+		slog.Error("feishu transcription failed", "err", err)
+		a.sendCard(ctx, base.ConversationID, fmt.Sprintf("⚠️ Transcription failed: %v", err), false) //nolint:errcheck
+		return channel.InboundEvent{}, false
+	}
+	base.Text = text
+	base.IsVoice = true
+	return base, true
+}
+
+// handleFile downloads a file message and saves it to the work directory.
+func (a *Adapter) handleFile(ctx context.Context, e messageEvent, base channel.InboundEvent) (channel.InboundEvent, bool) {
+	if e.Message.MessageID == "" {
+		return channel.InboundEvent{}, false
+	}
+	var c struct {
+		FileKey  string `json:"file_key"`
+		FileName string `json:"file_name"`
+	}
+	if err := json.Unmarshal([]byte(e.Message.Content), &c); err != nil || c.FileKey == "" {
+		return channel.InboundEvent{}, false
+	}
+	workDir := a.appCfg.WorkDirFor(base.ConversationID)
+	if workDir == "" {
+		workDir = "."
+	}
+	filename := fsFilename(c.FileName)
+	if filename == "" {
+		filename = fmt.Sprintf("upload_%d", time.Now().UnixNano())
+	}
+	destPath := filepath.Join(workDir, filename)
+	if err := a.downloadResource(ctx, e.Message.MessageID, c.FileKey, "file", destPath); err != nil {
+		slog.Error("feishu file download failed", "err", err)
+		a.sendCard(ctx, base.ConversationID, fmt.Sprintf("⚠️ File download failed: %v", err), false) //nolint:errcheck
+		return channel.InboundEvent{}, false
+	}
+	slog.Info("feishu file saved", "path", destPath)
+	base.Text = "[File saved to work directory: " + filename + "]"
+	return base, true
+}
+
+// handleImage downloads an image message and saves it to the work directory.
+func (a *Adapter) handleImage(ctx context.Context, e messageEvent, base channel.InboundEvent) (channel.InboundEvent, bool) {
+	if e.Message.MessageID == "" {
+		return channel.InboundEvent{}, false
+	}
+	var c struct {
+		ImageKey string `json:"image_key"`
+	}
+	if err := json.Unmarshal([]byte(e.Message.Content), &c); err != nil || c.ImageKey == "" {
+		return channel.InboundEvent{}, false
+	}
+	workDir := a.appCfg.WorkDirFor(base.ConversationID)
+	if workDir == "" {
+		workDir = "."
+	}
+	filename := fmt.Sprintf("photo_%s.jpg", time.Now().Format("20060102_150405"))
+	destPath := filepath.Join(workDir, filename)
+	if err := a.downloadResource(ctx, e.Message.MessageID, c.ImageKey, "image", destPath); err != nil {
+		slog.Error("feishu image download failed", "err", err)
+		a.sendCard(ctx, base.ConversationID, fmt.Sprintf("⚠️ Image download failed: %v", err), false) //nolint:errcheck
+		return channel.InboundEvent{}, false
+	}
+	slog.Info("feishu image saved", "path", destPath)
+	base.Text = "[File saved to work directory: " + filename + "]"
+	return base, true
+}
+
+// downloadResource fetches a message attachment from Feishu and writes it to destPath.
+// resourceType is "file" for documents/audio or "image" for images.
+func (a *Adapter) downloadResource(ctx context.Context, messageID, key, resourceType, destPath string) error {
+	token, err := a.getToken(ctx)
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("%s/im/v1/messages/%s/resources/%s?type=%s",
+		feishuBase, messageID, key, resourceType)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("http get: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+	f, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, resp.Body)
+	return err
+}
+
+// fsFilename strips directory components and leading dots to prevent path traversal.
+func fsFilename(name string) string {
+	name = filepath.Base(name)
+	name = strings.TrimLeft(name, ".")
+	return name
 }
 
 func (a *Adapter) parseAction(raw json.RawMessage) (channel.InboundEvent, bool) {
@@ -703,6 +851,7 @@ type messageEvent struct {
 		} `json:"sender_id"`
 	} `json:"sender"`
 	Message struct {
+		MessageID   string `json:"message_id"`
 		ChatID      string `json:"chat_id"`
 		MessageType string `json:"message_type"`
 		Content     string `json:"content"` // JSON-encoded string

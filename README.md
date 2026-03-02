@@ -302,8 +302,9 @@ log:
 | Feature | Telegram | Feishu |
 |---------|----------|--------|
 | Public IP required | ❌ Not needed | ❌ Not needed |
-| Voice input | ✅ Supported | ❌ Not yet (Feishu audio download pending) |
-| File upload → project dir | ✅ Supported | ❌ Not yet |
+| Voice input | ✅ Supported | ✅ Supported |
+| File upload → project dir | ✅ Supported | ✅ Supported |
+| Image upload → project dir | ✅ Supported | ✅ Supported |
 | Inline cancel button | ✅ | ✅ |
 | Quick-reply Yes/No buttons | ✅ | ✅ |
 | Message queuing | ✅ | ✅ |
