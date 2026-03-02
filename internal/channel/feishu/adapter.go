@@ -45,7 +45,7 @@ type Adapter struct {
 	events chan channel.InboundEvent
 }
 
-// New creates a Feishu Adapter and validates credentials by fetching a token.
+// New creates a Feishu Adapter and validates credentials.
 func New(cfg *config.Config) (*Adapter, error) {
 	a := &Adapter{
 		cfg:    &cfg.Feishu,
@@ -53,42 +53,59 @@ func New(cfg *config.Config) (*Adapter, error) {
 		seen:   make(map[string]time.Time),
 		events: make(chan channel.InboundEvent, 16),
 	}
+	// Validate credentials: token for outbound API calls.
 	if _, err := a.getToken(context.Background()); err != nil {
 		return nil, fmt.Errorf("feishu credential check failed: %w", err)
 	}
-	slog.Info("feishu adapter ready",
-		"listen", cfg.Feishu.ListenAddr,
-		"path", cfg.Feishu.WebhookPath)
+	if cfg.Feishu.UseWebhook {
+		slog.Info("feishu adapter ready (webhook mode)",
+			"listen", cfg.Feishu.ListenAddr,
+			"path", cfg.Feishu.WebhookPath)
+	} else {
+		slog.Info("feishu adapter ready (websocket mode, no public IP required)")
+	}
 	return a, nil
 }
 
 // ── channel.Channel ───────────────────────────────────────────────────────────
 
-// Events starts the HTTP webhook server and returns an event stream.
+// Events starts event delivery and returns the event stream.
+//
+// Default mode (UseWebhook=false): opens an outbound WebSocket connection to
+// Feishu — no public IP or port-forwarding required, works behind NAT exactly
+// like Telegram long-polling.
+//
+// Webhook mode (UseWebhook=true): starts an HTTP server; Feishu must be able
+// to reach this machine (public IP or tunnel like ngrok/frp).
 func (a *Adapter) Events(ctx context.Context) <-chan channel.InboundEvent {
-	mux := http.NewServeMux()
-	mux.HandleFunc(a.cfg.WebhookPath, func(w http.ResponseWriter, r *http.Request) {
-		a.handleWebhook(ctx, w, r)
-	})
-
-	srv := &http.Server{Addr: a.cfg.ListenAddr, Handler: mux}
-
-	go func() {
-		slog.Info("feishu webhook listening", "addr", a.cfg.ListenAddr, "path", a.cfg.WebhookPath)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("feishu webhook server", "err", err)
-		}
-	}()
-
-	go func() {
-		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		srv.Shutdown(shutCtx) //nolint:errcheck
-		close(a.events)
-	}()
-
 	go a.cleanSeen(ctx)
+
+	if a.cfg.UseWebhook {
+		mux := http.NewServeMux()
+		mux.HandleFunc(a.cfg.WebhookPath, func(w http.ResponseWriter, r *http.Request) {
+			a.handleWebhook(ctx, w, r)
+		})
+		srv := &http.Server{Addr: a.cfg.ListenAddr, Handler: mux}
+		go func() {
+			slog.Info("feishu webhook listening", "addr", a.cfg.ListenAddr, "path", a.cfg.WebhookPath)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("feishu webhook server", "err", err)
+			}
+		}()
+		go func() {
+			<-ctx.Done()
+			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			srv.Shutdown(shutCtx) //nolint:errcheck
+			close(a.events)
+		}()
+	} else {
+		go func() {
+			slog.Info("feishu ws: starting long connection (no public IP required)")
+			a.runWebSocket(ctx)
+			close(a.events)
+		}()
+	}
 
 	return a.events
 }

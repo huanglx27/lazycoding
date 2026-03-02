@@ -24,9 +24,10 @@ type Config struct {
 type FeishuConfig struct {
 	AppID       string `yaml:"app_id"`
 	AppSecret   string `yaml:"app_secret"`
-	EncryptKey  string `yaml:"encrypt_key"`  // optional AES event encryption key
-	WebhookPath string `yaml:"webhook_path"` // HTTP path, default "/feishu"
-	ListenAddr  string `yaml:"listen_addr"`  // e.g. ":8080"
+	EncryptKey  string `yaml:"encrypt_key"`   // optional AES event encryption key
+	UseWebhook  bool   `yaml:"use_webhook"`   // true = HTTP webhook mode (needs public IP); default false = WebSocket long connection
+	WebhookPath string `yaml:"webhook_path"`  // HTTP path, default "/feishu" (webhook mode only)
+	ListenAddr  string `yaml:"listen_addr"`   // e.g. ":8080" (webhook mode only)
 }
 
 // TelegramConfig holds Telegram-specific settings.

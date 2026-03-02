@@ -32,9 +32,16 @@
 feishu:
   app_id: ""          # e.g. "cli_xxxxxxxxxxxxxxxxxx"  (leave empty to disable)
   app_secret: ""      # App Secret from the Feishu developer console
-  encrypt_key: ""     # Optional: AES event encryption key (leave empty if unused)
-  webhook_path: "/feishu"   # HTTP path for incoming webhooks
-  listen_addr: ":8080"      # Address for the webhook HTTP server
+
+  # Connection mode (default: WebSocket — no public IP or port-forwarding needed).
+  # The bot opens an outbound WebSocket to Feishu, just like Telegram long-polling.
+  # Set use_webhook: true only if you need the HTTP push model (server deployments
+  # with a public IP; also requires encrypt_key/webhook_path/listen_addr below).
+  use_webhook: false
+
+  encrypt_key: ""     # Optional AES event encryption key (webhook mode only)
+  webhook_path: "/feishu"   # HTTP path for incoming webhooks (webhook mode only)
+  listen_addr: ":8080"      # Webhook server listen address (webhook mode only)
 
 
 # ─────────────────────────────────────────────────────────────
