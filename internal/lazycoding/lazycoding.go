@@ -751,6 +751,23 @@ func (lc *Lazycoding) handleCommand(ctx context.Context, ev channel.InboundEvent
 			lc.ch.SendText(ctx, convID, "No active session yet.") //nolint:errcheck
 		}
 
+	case "resume":
+		sessKey := lc.sessionKey(convID)
+		sessionID := strings.TrimSpace(ev.CommandArgs)
+		if sessionID == "" {
+			lc.ch.SendText(ctx, convID, //nolint:errcheck
+				"Usage: <code>/resume &lt;session_id&gt;</code>\n"+
+					"Resumes a specific Claude session by ID.\n"+
+					"Use /session to view the current session ID.")
+		} else {
+			existing, _ := lc.store.Get(sessKey)
+			existing.ClaudeSessionID = sessionID
+			lc.store.Set(sessKey, existing)
+			lc.ch.SendText(ctx, convID, //nolint:errcheck
+				"Session set to <code>"+tgrender.EscapeHTML(sessionID)+"</code>.\n"+
+					"<i>Claude will resume this session on your next message.</i>")
+		}
+
 	case "workdir":
 		workDir := lc.cfg.WorkDirFor(convID)
 		if workDir == "" {
@@ -782,6 +799,7 @@ func (lc *Lazycoding) handleCommand(ctx context.Context, ev channel.InboundEvent
 			"/reset               – clear session history and start fresh\n" +
 			"/compact [hint]      – compress session context\n" +
 			"/session             – show current Claude session ID\n" +
+			"/resume &lt;id&gt;   – resume a specific Claude session by ID\n" +
 			"/model [name]        – show or switch the Claude model\n" +
 			"/cost                – show token usage and estimated cost\n\n" +
 			"<b>Filesystem commands:</b>\n" +
