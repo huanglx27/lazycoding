@@ -436,6 +436,9 @@ func (lc *Lazycoding) consumeStream(
 	defer lc.runningStatus.Delete(statusKey)
 
 	doFlush := func() {
+		if ctx.Err() != nil {
+			return // context cancelled — skip API call
+		}
 		content := render()
 		lc.runningStatus.Store(statusKey, content)
 		if err := lc.ch.UpdateText(ctx, handle, content); err != nil {
@@ -524,6 +527,14 @@ func (lc *Lazycoding) consumeStream(
 			}
 
 		case agent.EventKindError:
+			if ctx.Err() != nil {
+				// Context was cancelled by the user (/cancel, Cancel button, /reset).
+				// The confirmation was already sent by handleCallback/handleCommand.
+				// Just seal the placeholder silently — no confusing "killed" error message.
+				slog.Debug("agent stopped (context cancelled)", "conversation", ev.ConversationID, "reason", ctx.Err())
+				handle.Seal()
+				break
+			}
 			slog.Error("agent error", "conversation", ev.ConversationID, "user", ev.UserKey, "err", agEv.Err)
 			if lc.cfg.Log.Verbose {
 				convLogError(ev.ConversationID, agEv.Err)
