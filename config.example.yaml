@@ -7,14 +7,21 @@
 #   # Edit config.yaml: fill in your token and paths
 #   ./lazycoding config.yaml
 #
-# Core concept: each conversation (Telegram DM/group or Feishu chat) can be
-# mapped to a local working directory.  Messages sent to that conversation
-# are executed by Claude inside the corresponding directory.
+# Core concept: each conversation can be mapped to a local working directory.
+# Messages sent to that conversation are executed by Claude inside that directory.
 #
-# Platform selection: lazycoding starts every configured adapter.
-#   • Set feishu.app_id  → Feishu webhook mode (HTTP server)
-#   • Set telegram.token → Telegram long-polling mode
-#   • Both can be active simultaneously in the same process.
+# Platform selection: lazycoding starts every configured adapter simultaneously.
+# Any combination of platforms can be active in the same process.
+#
+#   Platform       | Requires public IP | Connection mode
+#   ───────────────┼────────────────────┼─────────────────────────
+#   Telegram       | No                 | Long-polling (outbound)
+#   Feishu / Lark  | No (default)       | WebSocket long connection
+#   QQ group bot   | No                 | WebSocket long connection
+#   DingTalk       | No                 | Stream mode (WebSocket)
+#   WeCom (企业微信) | Yes               | HTTP webhook (inbound)
+#
+# Enable a platform by filling in its credentials below; leave empty to skip.
 
 # ─────────────────────────────────────────────────────────────
 # Feishu / Lark  (can run alongside Telegram)

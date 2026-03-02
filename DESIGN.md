@@ -4,7 +4,7 @@
 
 Claude Code is a powerful agentic coding tool, but it's bound to a terminal on your development machine. The moment you step away from your desk, you lose access.
 
-lazycoding removes that constraint. It is a **local gateway process** that exposes Claude Code to any Telegram or Feishu conversation. The design follows three principles:
+lazycoding removes that constraint. It is a **local gateway process** that exposes Claude Code to any supported chat platform. The design follows three principles:
 
 1. **Locality** — Claude Code runs on *your* machine with full access to *your* filesystem. No cloud intermediary touches your source code.
 2. **Multiplexing** — one bot process serves many projects. Each Telegram conversation maps to one project directory; conversations are fully isolated from each other.
@@ -21,20 +21,21 @@ lazycoding removes that constraint. It is a **local gateway process** that expos
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │                    lazycoding                         │  │
 │  │                                                      │  │
-│  │  ┌────────────┐   ┌───────────┐   ┌──────────────┐  │  │
-│  │  │  channel/  │   │lazycoding │   │    agent/    │  │  │
-│  │  │ tg|feishu  │◄──│    core   │──►│    claude    │  │  │
-│  │  │  adapter   │   │(dispatch) │   │   runner     │  │  │
-│  │  └────────────┘   └───────────┘   └──────────────┘  │  │
-│  │        │               │                  │           │  │
-│  │   InboundEvent    session.Store      subprocess       │  │
-│  │   MessageHandle   FileStore          stream-json      │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-         ▲                                     ▼
-  Telegram API (polling)               Project files
-  Feishu webhook (HTTP)               /path/to/project/
+│  │  ┌──────────────────┐   ┌───────────┐   ┌──────────────┐  │  │
+│  │  │    channel/      │   │lazycoding │   │    agent/    │  │  │
+│  │  │ tg|fs|qq|dt|ww   │◄──│    core   │──►│    claude    │  │  │
+│  │  │    adapters      │   │(dispatch) │   │   runner     │  │  │
+│  │  └──────────────────┘   └───────────┘   └──────────────┘  │  │
+│  │          │                   │                  │           │  │
+│  │   InboundEvent          session.Store      subprocess       │  │
+│  │   MessageHandle         FileStore          stream-json      │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+         ▲                                        ▼
+  Telegram (long-poll)                    Project files
+  Feishu / QQ / DingTalk (WebSocket)     /path/to/project/
+  WeCom (HTTP webhook)
 ```
 
 ---
@@ -61,16 +62,27 @@ internal/
 
   channel/
     channel.go              Channel interface, InboundEvent, MessageHandle,
-                            KeyboardButton (for inline keyboards)
+                            KeyboardButton, NewMultiAdapter (fan-in + routing)
     telegram/
-      adapter.go            Telegram polling, voice/document/photo handling,
+      adapter.go            Telegram long-polling, voice/document/photo handling,
                             inline keyboard send/answer, SendDocument
       renderer.go           Markdown→HTML conversion, table rendering,
                             UTF-8-safe Split / Truncate
     feishu/
-      adapter.go            Feishu webhook server, interactive card send/patch,
-                            token management, AES event decryption, SendDocument
+      adapter.go            Feishu WebSocket/webhook, interactive card send/patch,
+                            token management, AES event decryption, SendDocument,
+                            voice/file/image download
       renderer.go           Telegram HTML → Lark Markdown conversion, SplitText
+      ws.go                 Feishu WebSocket long-connection protocol (protobuf)
+    qqbot/
+      adapter.go            QQ group bot WebSocket (outbound), JSON opcode protocol,
+                            token from bots.qq.com, delayed-send handle
+    dingtalk/
+      adapter.go            DingTalk stream mode WebSocket (outbound), EVENT/SYSTEM
+                            frames, sessionWebhook reply, delayed-send handle
+    wework/
+      adapter.go            WeCom HTTP webhook server, AES-256-CBC decryption,
+                            SHA1 signature verify, REST API reply, delayed-send handle
 
   transcribe/
     transcribe.go           Transcriber interface, Config, New() factory
@@ -112,7 +124,7 @@ type Channel interface {
 
 | Field            | Description |
 |------------------|-------------|
-| `UserKey`        | `"tg:{userID}"` (Telegram) or `"fs:{openID}"` (Feishu) — sender identity |
+| `UserKey`        | `"tg:{userID}"` / `"fs:{openID}"` / `"qq:{memberOpenID}"` / `"dt:{staffID}"` / `"ww:{userID}"` — sender identity |
 | `ConversationID` | Telegram chat ID string — which project context to use |
 | `Text`           | message text; for voice messages: the transcription |
 | `IsCommand`      | true when the message starts with `/` |
@@ -491,29 +503,73 @@ pendingState.queue                        guarded by pendingState.mu (inner lock
 
 ---
 
-## Feishu Adapter
+## Channel Adapters
 
-The Feishu adapter differs from the Telegram adapter in the following ways:
+### Adapter comparison
 
-| Aspect | Telegram | Feishu (default) | Feishu (webhook mode) |
-|--------|----------|------------------|----------------------|
-| Event delivery | Long polling (`getUpdates`) | WebSocket long connection | HTTP webhook (push) |
-| Public IP required | ❌ No | ❌ No | ✅ Yes |
-| Server started in | `Events()` starts poll loop | `Events()` dials `wss://` | `Events()` starts `http.Server` |
-| Message format | Telegram HTML (parse_mode=HTML) | Lark Markdown inside interactive card | Lark Markdown inside interactive card |
-| Editing messages | `editMessageText` | PATCH `/im/v1/messages/{id}` | PATCH `/im/v1/messages/{id}` |
-| Token management | Static bot token | `tenant_access_token` (2h TTL, auto-refresh) | `tenant_access_token` (2h TTL, auto-refresh) |
-| Event deduplication | Not needed (Telegram guarantees) | `seen map[eventID]time.Time`, cleaned every 5 min | `seen map[eventID]time.Time`, cleaned every 5 min |
-| AES decryption | N/A | N/A | Optional; sha256(encrypt_key) as AES-256-CBC key |
-| Voice/file/image events | Fully handled | Fully handled | Fully handled |
+| Aspect | Telegram | Feishu (default) | Feishu (webhook) | QQ Bot | DingTalk | WeCom |
+|--------|----------|------------------|-----------------|--------|----------|-------|
+| Event delivery | Long-polling | WebSocket (outbound) | HTTP webhook | WebSocket (outbound) | WebSocket (outbound) | HTTP webhook |
+| Public IP | ❌ No | ❌ No | ✅ Yes | ❌ No | ❌ No | ✅ Yes |
+| Message format | Telegram HTML | Lark Markdown card | Lark Markdown card | Plain text | Markdown | Markdown |
+| Edit-in-place | `editMessageText` | PATCH card | PATCH card | ❌ Delayed-send | ❌ Delayed-send | ❌ Delayed-send |
+| Token / auth | Static bot token | `tenant_access_token` (2h TTL) | same | `access_token` (bots.qq.com) | `accessToken` (2h TTL) | `access_token` (2h TTL) |
+| Voice / file / image | ✅ Fully handled | ✅ Fully handled | ✅ Fully handled | ❌ | ❌ | ❌ |
+| Inline keyboards | ✅ | ✅ (card actions) | ✅ | ❌ | ❌ | ❌ |
 
-**WebSocket mode (default):** The adapter calls `POST /callback/ws/endpoint` with app credentials to obtain a `wss://` URL (containing `device_id` and `service_id` query params), then dials it with `gorilla/websocket`. Frames are binary protobuf (hand-rolled encoder/decoder; no SDK dependency). `method=0` = control (ping/pong), `method=1` = data (events). Pings are sent every `ClientConfig.PingInterval` seconds (default 120s). Each event frame is ACK'd with a response frame (`payload={"code":200}`). On disconnect, the adapter reconnects with exponential backoff (2s → 60s cap).
+### Telegram
 
-**Webhook mode (`use_webhook: true`):** The adapter starts an HTTP server; Feishu pushes events to it. Requires a public IP or tunnel (ngrok/frp). Supports optional AES-CBC-256 event decryption.
+Long-polling via `telegram-bot-api`. Each update runs a goroutine for download/transcription. `tgHandle` tracks whether an inline keyboard is attached so `UpdateText` can strip it on first real content.
 
-**Card format:** Feishu messages are sent as interactive cards with a `lark_md` div element for the markdown content and an optional `action` element for buttons. `UpdateText` calls PATCH to update the card's content in-place, producing the same streaming-feel as Telegram's `editMessageText`.
+### Feishu / Lark
 
-**Renderer:** `TelegramHTMLToLarkMarkdown` converts the Telegram-style HTML produced by `MarkdownToTelegramHTML` (bold → `**...**`, code blocks → ` ``` `, links → `[text](url)`) into Lark Markdown. `SplitText` splits long responses at newline boundaries, respecting `MaxCardTextLen = 3000` runes.
+**WebSocket mode (default):** Calls `POST /callback/ws/endpoint` to get a `wss://` URL, then dials with `gorilla/websocket`. Frames are binary protobuf (hand-rolled encoder/decoder; no SDK). `method=0` = ping/pong, `method=1` = events. ACK sent per event frame (`{"code":200}`). Reconnects with exponential backoff (2s → 60s).
+
+**Webhook mode:** Starts an HTTP server; Feishu pushes events. Optional AES-CBC-256 event encryption (`sha256(encrypt_key)` as AES-256-CBC key).
+
+**Card format:** Interactive cards with `lark_md` div + optional `action` buttons. `UpdateText` → PATCH `/im/v1/messages/{id}` (edit-in-place streaming).
+
+**Renderer:** `TelegramHTMLToLarkMarkdown` converts Telegram HTML → Lark Markdown. `SplitText` splits at newline boundaries (max 3000 runes per card).
+
+### QQ Group Bot
+
+**Protocol:** Outbound WebSocket to `wss://api.sgroup.qq.com/websocket`. JSON opcode handshake: OP10 Hello → OP2 Identify (intent=`GROUP_AND_C2C_EVENT`, 1<<25) → OP11 heartbeat ACK loop. Events arrive as OP0 Dispatch with type `GROUP_AT_MESSAGE_CREATE`.
+
+**Token:** POST to `https://bots.qq.com/app/getAppAccessToken` with `{appId, clientSecret}`. TTL from `expires_in` field (string, seconds). Authorization header: `QQBot <token>`.
+
+**Reply:** `POST /v2/groups/{group_openid}/messages` with `{content, msg_type:0, msg_id}`. The `msg_id` references the original user message (5-minute passive reply window). The adapter stores the latest `msg_id` per `group_openid` in a map.
+
+**Delayed-send handle:** `SendText/SendKeyboard` sends an initial message immediately and returns a handle. `UpdateText` buffers. `Seal()` sends the final accumulated text via the REST API.
+
+**Renderer:** `htmlToPlainText` — strips all HTML tags, unescapes entities. QQ plain text only.
+
+### DingTalk Stream
+
+**Protocol:** Calls `POST https://api.dingtalk.com/v1.0/gateway/connections/open` (with `x-acs-dingtalk-access-token`) to get a WebSocket endpoint URL. Connects to the URL; receives JSON stream frames with `type` (SYSTEM/EVENT) and `headers.topic`.
+
+SYSTEM frames: `ping` → reply `pong` (same `messageId`). EVENT frames: ACK with `{"code":200}` SYSTEM frame, then dispatch.
+
+Bot message events have `topic=/v1.0/im/bot/messages/getAll`. Each message includes a `sessionWebhook` URL for replying (valid ~2 hours).
+
+**Reply:** POST to `sessionWebhook` with `{msgtype:"markdown", markdown:{title, text}}`. No auth token needed (webhook URL is self-authenticating).
+
+**Delayed-send handle:** Same pattern as QQ. `Seal()` posts to the latest stored `sessionWebhook` for the conversation.
+
+**Renderer:** `htmlToMarkdown` — same logic as Feishu's `TelegramHTMLToLarkMarkdown`.
+
+### WeCom (企业微信)
+
+**Protocol:** HTTP webhook server (same as Feishu webhook mode). GET = URL verification (decrypt `echostr`, return plaintext). POST = message callback (decrypt XML, dispatch).
+
+**Decryption:** `EncodingAESKey` (43 base64 chars + "=" padding) → 32-byte AES key. IV = first 16 bytes of key. AES-256-CBC decrypt → PKCS7 unpad → strip 16-byte random prefix + 4-byte length field → XML content + corpID suffix.
+
+**Signature:** `SHA1(sorted([token, timestamp, nonce, encrypt]))`.
+
+**Reply:** GET access token from `/cgi-bin/gettoken?corpid=&corpsecret=`, then POST to `/cgi-bin/message/send` with `{touser, msgtype:"markdown", agentid, markdown:{content}}`.
+
+**Delayed-send handle:** Same pattern as QQ/DingTalk. `ConversationID` = `FromUserName` (user's openid), used as `touser` in replies.
+
+**Renderer:** `htmlToMarkdown` — same as DingTalk.
 
 ---
 
@@ -613,14 +669,20 @@ If lazycoding already has a stored session, it takes priority (the discovered lo
 Implement `channel.Channel` for Slack, Discord, or any other messaging platform. The core orchestration layer, agent runner, session store, and transcription layer are all platform-agnostic. Wire the new adapter in `cmd/lazycoding/main.go`.
 
 **Built-in adapters:**
-- **Telegram** (`internal/channel/telegram`) — long-polling, voice, file upload/download, inline keyboards
-- **Feishu/Lark** (`internal/channel/feishu`) — HTTP webhook, interactive cards, AES event decryption, file upload
+- **Telegram** (`internal/channel/telegram`) — long-polling, voice, file upload/download, inline keyboards, edit-in-place streaming
+- **Feishu/Lark** (`internal/channel/feishu`) — WebSocket + webhook, interactive cards, AES event decryption, voice/file/image, edit-in-place via card PATCH
+- **QQ Group Bot** (`internal/channel/qqbot`) — outbound WebSocket, JSON opcodes, delayed-send handle
+- **DingTalk** (`internal/channel/dingtalk`) — stream mode WebSocket, sessionWebhook reply, delayed-send handle
+- **WeCom** (`internal/channel/wework`) — HTTP webhook, AES-CBC decryption, REST API reply, delayed-send handle
 
-**Adapter selection** in `cmd/lazycoding/main.go` — both platforms can be active simultaneously:
+**Adapter selection** in `cmd/lazycoding/main.go` — all platforms can be active simultaneously:
 ```go
 var adapters []channel.Channel
-if cfg.Feishu.AppID != ""   { adapters = append(adapters, fsadapter.New(cfg)) }
-if cfg.Telegram.Token != "" { adapters = append(adapters, tgadapter.New(cfg, tr)) }
+if cfg.Feishu.AppID != ""    { adapters = append(adapters, fsadapter.New(cfg, tr)) }
+if cfg.Telegram.Token != ""  { adapters = append(adapters, tgadapter.New(cfg, tr)) }
+if cfg.QQBot.AppID != ""     { adapters = append(adapters, qqadapter.New(cfg)) }
+if cfg.DingTalk.AppKey != "" { adapters = append(adapters, dtadapter.New(cfg)) }
+if cfg.WeWork.CorpID != ""   { adapters = append(adapters, wwadapter.New(cfg)) }
 ch := channel.NewMultiAdapter(adapters...)  // fan-in + routing
 ```
 
