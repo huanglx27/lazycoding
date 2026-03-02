@@ -50,29 +50,35 @@ func main() {
 		slog.Info("transcription enabled", "backend", cfg.Transcription.Backend)
 	}
 
-	// Select channel adapter based on config.
-	var ch channel.Channel
-	switch {
-	case cfg.Feishu.AppID != "":
+	// Initialise all configured adapters; at least one must be present.
+	var adapters []channel.Channel
+
+	if cfg.Feishu.AppID != "" {
 		fsCh, err := fsadapter.New(cfg)
 		if err != nil {
 			slog.Error("feishu adapter init", "err", err)
 			os.Exit(1)
 		}
-		ch = fsCh
-		slog.Info("using feishu channel")
-	case cfg.Telegram.Token != "":
+		adapters = append(adapters, fsCh)
+		slog.Info("feishu channel enabled")
+	}
+
+	if cfg.Telegram.Token != "" {
 		tgCh, err := tgadapter.New(cfg, tr)
 		if err != nil {
 			slog.Error("telegram adapter init", "err", err)
 			os.Exit(1)
 		}
-		ch = tgCh
-		slog.Info("using telegram channel")
-	default:
+		adapters = append(adapters, tgCh)
+		slog.Info("telegram channel enabled")
+	}
+
+	if len(adapters) == 0 {
 		slog.Error("no platform configured: set feishu.app_id or telegram.token in config.yaml")
 		os.Exit(1)
 	}
+
+	ch := channel.NewMultiAdapter(adapters...)
 
 	runner := claude.New(&cfg.Claude)
 

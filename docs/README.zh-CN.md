@@ -663,7 +663,7 @@ transcription:
 → 可以。在 config.yaml 中填写 `feishu.app_id` 和 `feishu.app_secret`（`telegram.token` 留空或删除）。lazycoding 会自动选择飞书 adapter，用互动卡片代替 Telegram 的原地编辑消息实现流式输出效果。
 
 **Q: 能同时运行 Telegram 和飞书吗？**
-→ 单个进程不支持。可以用两个不同的 config 文件启动两个实例，如果需要共享上下文，指向同一个 session 文件即可。
+→ 支持。在同一个 config.yaml 中同时填写 `feishu.app_id` 和 `telegram.token`，lazycoding 会同时启动两个 adapter，将事件汇聚到同一个处理流水线。每个对话的 session 和消息队列完全独立。
 
 **问：收到"Session contains expired thinking-block signatures"错误**
 → 这是 Claude 扩展思考模式的会话签名过期导致的。发送 `/reset` 开启新会话即可。

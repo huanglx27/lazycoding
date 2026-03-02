@@ -550,17 +550,15 @@ Claude Code 把路径中的每个 `/` 替换成 `-` 进行编码，因此 `/User
 - **Telegram** (`internal/channel/telegram`) — 长轮询、语音、文件上传/下载、内联键盘
 - **飞书/Lark** (`internal/channel/feishu`) — HTTP Webhook、互动卡片、AES 事件解密、文件上传
 
-**`cmd/lazycoding/main.go` 中的 adapter 选择逻辑：**
+**`cmd/lazycoding/main.go` 中的 adapter 初始化——两个平台可以同时启用：**
 ```go
-switch {
-case cfg.Feishu.AppID != "":
-    ch, _ = fsadapter.New(cfg)        // 启动 HTTP Webhook 服务器
-case cfg.Telegram.Token != "":
-    ch, _ = tgadapter.New(cfg, tr)   // 启动长轮询循环
-default:
-    slog.Error("未配置任何平台"); os.Exit(1)
-}
+var adapters []channel.Channel
+if cfg.Feishu.AppID != ""   { adapters = append(adapters, fsadapter.New(cfg)) }
+if cfg.Telegram.Token != "" { adapters = append(adapters, tgadapter.New(cfg, tr)) }
+ch := channel.NewMultiAdapter(adapters...)  // 事件汇聚 + 路由
 ```
+
+`channel.NewMultiAdapter` 将多个 adapter 包装为单一 `Channel` 接口。所有 adapter 的事件汇聚到同一个 channel；出站调用（`SendText`、`UpdateText` 等）通过 `conversationID → adapter` 路由表（随事件到达自动填充）转发回正确的 adapter。`MessageHandle` 被封装为 `multiHandle`，保留来源 adapter 引用以支持 `UpdateText` 路由。
 
 **接入新平台（以 Slack 为例）：**
 ```go

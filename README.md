@@ -666,7 +666,7 @@ Note: do not use both simultaneously (local CLI + Telegram) for the same session
 → Yes. Set `feishu.app_id` and `feishu.app_secret` in config.yaml (and remove or leave blank `telegram.token`). lazycoding automatically selects the Feishu adapter. The bot uses interactive cards for streaming output instead of Telegram's edit-in-place messages.
 
 **Q: Can I run both Telegram and Feishu at the same time?**
-→ Not with a single process. Run two separate instances with separate config files, pointing to the same session file if you want shared context.
+→ Yes. Set both `feishu.app_id` and `telegram.token` in the same config file. lazycoding starts both adapters simultaneously and fans their events into one pipeline. Sessions and queuing are fully independent per conversation.
 
 **Q: "Session contains expired thinking-block signatures" error**
 → This happens when Claude's extended thinking session has expired signature data. Send `/reset` to start a fresh session.

@@ -547,17 +547,15 @@ Implement `channel.Channel` for Slack, Discord, or any other messaging platform.
 - **Telegram** (`internal/channel/telegram`) — long-polling, voice, file upload/download, inline keyboards
 - **Feishu/Lark** (`internal/channel/feishu`) — HTTP webhook, interactive cards, AES event decryption, file upload
 
-**Adapter selection** in `cmd/lazycoding/main.go`:
+**Adapter selection** in `cmd/lazycoding/main.go` — both platforms can be active simultaneously:
 ```go
-switch {
-case cfg.Feishu.AppID != "":
-    ch, _ = fsadapter.New(cfg)        // starts HTTP webhook server
-case cfg.Telegram.Token != "":
-    ch, _ = tgadapter.New(cfg, tr)   // starts long-polling loop
-default:
-    slog.Error("no platform configured"); os.Exit(1)
-}
+var adapters []channel.Channel
+if cfg.Feishu.AppID != ""   { adapters = append(adapters, fsadapter.New(cfg)) }
+if cfg.Telegram.Token != "" { adapters = append(adapters, tgadapter.New(cfg, tr)) }
+ch := channel.NewMultiAdapter(adapters...)  // fan-in + routing
 ```
+
+`channel.NewMultiAdapter` wraps multiple adapters behind a single `Channel` interface.  Events from all adapters are fanned into one channel; outbound calls (`SendText`, `UpdateText`, …) are routed back to the originating adapter via a `conversationID → adapter` map populated as events arrive. `MessageHandle` values are wrapped in a `multiHandle` that preserves the originating adapter for `UpdateText` routing.
 
 **Adding a new adapter** (e.g. Slack):
 ```go

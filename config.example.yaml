@@ -11,13 +11,13 @@
 # mapped to a local working directory.  Messages sent to that conversation
 # are executed by Claude inside the corresponding directory.
 #
-# Platform selection: lazycoding picks the adapter automatically.
+# Platform selection: lazycoding starts every configured adapter.
 #   • Set feishu.app_id  → Feishu webhook mode (HTTP server)
 #   • Set telegram.token → Telegram long-polling mode
-#   • Only one platform can be active per process.
+#   • Both can be active simultaneously in the same process.
 
 # ─────────────────────────────────────────────────────────────
-# Feishu / Lark  (comment out if using Telegram)
+# Feishu / Lark  (can run alongside Telegram)
 # ─────────────────────────────────────────────────────────────
 #
 # How to set up:
@@ -38,7 +38,7 @@ feishu:
 
 
 # ─────────────────────────────────────────────────────────────
-# Telegram  (comment out if using Feishu)
+# Telegram  (can run alongside Feishu)
 # ─────────────────────────────────────────────────────────────
 telegram:
   # Bot token from @BotFather (required).
