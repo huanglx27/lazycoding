@@ -56,13 +56,54 @@ func convLogRecv(convID, userKey, text string) {
 }
 
 // convLogTool logs a tool invocation with a human-readable summary.
+// Multi-line summaries (e.g. heredoc Bash commands) are printed with
+// continuation lines indented to align below the first summary line.
 func convLogTool(name, input, workDir string) {
 	label := color(ansiYellow, "🔧 "+name)
 	summary := formatToolInput(name, input, workDir)
-	if summary != "" {
-		fmt.Fprintf(os.Stderr, "%s   %s  %s\n", ts(), label, color(ansiGray, summary))
-	} else {
+	if summary == "" {
 		fmt.Fprintf(os.Stderr, "%s   %s\n", ts(), label)
+		return
+	}
+	lines := strings.Split(strings.TrimRight(summary, "\n"), "\n")
+	fmt.Fprintf(os.Stderr, "%s   %s  %s\n", ts(), label, color(ansiGray, lines[0]))
+	for _, line := range lines[1:] {
+		fmt.Fprintf(os.Stderr, "                    %s\n", color(ansiGray, line))
+	}
+}
+
+// convLogToolResult logs the output returned by a tool invocation,
+// using the same ⎿ prefix style as the Claude Code terminal UI.
+func convLogToolResult(result string) {
+	if result == "" {
+		return
+	}
+	trimmed := strings.TrimSpace(result)
+	const maxLines = 50
+	const maxChars = 2000
+
+	lines := strings.Split(trimmed, "\n")
+	truncated := false
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+		truncated = true
+	}
+	out := strings.Join(lines, "\n")
+	if len(out) > maxChars {
+		out = safeSlice(out, maxChars)
+		if idx := strings.LastIndex(out, "\n"); idx > 0 {
+			out = out[:idx]
+		}
+		truncated = true
+	}
+	if truncated {
+		out += "\n…"
+	}
+
+	outLines := strings.Split(out, "\n")
+	fmt.Fprintf(os.Stderr, "                    %s\n", color(ansiGray, "⎿  "+outLines[0]))
+	for _, line := range outLines[1:] {
+		fmt.Fprintf(os.Stderr, "                    %s\n", color(ansiGray, "   "+line))
 	}
 }
 
@@ -119,8 +160,8 @@ func formatToolInput(toolName, input, workDir string) string {
 
 	case "Bash":
 		cmd := getString("command")
-		if len(cmd) > 200 {
-			cmd = cmd[:197] + "…"
+		if len(cmd) > 2000 {
+			cmd = cmd[:1997] + "…"
 		}
 		return cmd
 

@@ -489,6 +489,9 @@ func (lc *Lazycoding) consumeStream(
 					doFlush()
 				}
 			}
+			if lc.cfg.Log.Verbose && agEv.ToolResult != "" {
+				convLogToolResult(agEv.ToolResult)
+			}
 
 		case agent.EventKindResult:
 			if agEv.SessionID != "" {
