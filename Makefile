@@ -15,6 +15,10 @@ DIST     := dist
 build:
 	go build $(LDFLAGS) -o $(BIN) $(PKG)
 
+## run: build and run lazycoding with config.yaml
+run: build
+	./$(BIN) config.yaml
+
 ## build-whisper: compile with embedded CGo whisper-native voice recognition
 ##   prerequisite: brew install whisper-cpp ffmpeg
 build-whisper:
