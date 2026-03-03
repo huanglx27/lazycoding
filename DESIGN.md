@@ -21,11 +21,11 @@ lazycoding removes that constraint. It is a **local gateway process** that expos
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │                    lazycoding                         │  │
 │  │                                                      │  │
-│  │  ┌──────────────────┐   ┌───────────┐   ┌──────────────┐  │  │
-│  │  │    channel/      │   │lazycoding │   │    agent/    │  │  │
-│  │  │ tg|fs|qq|dt|ww   │◄──│    core   │──►│    claude    │  │  │
-│  │  │    adapters      │   │(dispatch) │   │   runner     │  │  │
-│  │  └──────────────────┘   └───────────┘   └──────────────┘  │  │
+│  │  ┌──────────────────┐   ┌───────────┐   ┌─────────────────────────────┐  │  │
+│  │  │    channel/      │   │lazycoding │   │          agent/            │  │  │
+│  │  │ tg|fs|qq|dt|ww   │◄──│    core   │──►│ claude | opencode | codex │  │  │
+│  │  │    adapters      │   │(dispatch) │   │          runners           │  │  │
+│  │  └──────────────────┘   └───────────┘   └─────────────────────────────┘  │  │
 │  │          │                   │                  │           │  │
 │  │   InboundEvent          session.Store      subprocess       │  │
 │  │   MessageHandle         FileStore          stream-json      │  │
@@ -56,6 +56,12 @@ internal/
     claude/
       runner.go             spawn claude subprocess with correct WorkDir
       parser.go             stream-json JSONL → []agent.Event
+    opencode/
+      runner.go             spawn opencode run --format json subprocess
+      parser.go             JSONL parser for opencode output
+    codex/
+      runner.go             spawn codex exec --json subprocess
+      parser.go             JSONL parser for codex output
 
   session/
     store.go                Store interface, MemoryStore, FileStore (JSON-backed)
@@ -141,6 +147,8 @@ type Channel interface {
 
 ### `agent.Agent` — AI backend abstraction
 
+lazycoding supports multiple AI coding agents through the `Agent` interface. The backend is selected via the `agent.backend` configuration field (`claude`, `opencode`, or `codex`). Each backend has its own runner and parser that adapt to the specific CLI tool's output format.
+
 ```go
 type Agent interface {
     Stream(ctx context.Context, req StreamRequest) (<-chan Event, error)
@@ -152,8 +160,8 @@ type Agent interface {
 | Field        | Description |
 |--------------|-------------|
 | `Prompt`     | user instruction |
-| `SessionID`  | resumes an existing Claude session; empty = new session |
-| `WorkDir`    | Claude's working directory |
+| `SessionID`  | resumes an existing agent session; empty = new session |
+| `WorkDir`    | Agent's working directory |
 | `ExtraFlags` | additional CLI flags (e.g. `--model claude-opus-4-6`) |
 
 `Event.Kind` values:
@@ -203,7 +211,7 @@ Four backends, selectable via config with no code changes. See [Voice input pipe
 
 The session store and request-serialisation map are both keyed by **`sessionKey`**, which is the work directory path when one is configured, or the `ConversationID` otherwise (`sessionKey = workDir if non-empty, else convID`). Rationale:
 
-- Multiple conversations that point at the same project directory share one Claude session and are serialised automatically.
+- Multiple conversations that point at the same project directory share one agent session and are serialised automatically.
 - All members of a group share the same Claude session and see each other's progress.
 - Conversations without a configured work directory fall back to chat ID isolation.
 
@@ -324,8 +332,11 @@ The core UX challenge is mapping a streaming terminal session to a chat message.
 
 ---
 
-## Claude CLI Invocation
+## Agent CLI Invocation
 
+Each backend has its own CLI invocation pattern:
+
+**Claude Code:**
 ```sh
 claude \
   --print \
@@ -336,8 +347,26 @@ claude \
   "<prompt>"
 ```
 
-- `stream-json` emits one JSON object per line on stdout.
-- `parser.ParseLineMulti` converts each line to zero or more `agent.Event` values, handling multi-block assistant turns (text + tool_use in a single assistant message).
+**OpenCode:**
+```sh
+opencode run \
+  --format json \
+  [--resume <session_id>] \
+  [extra_flags...] \
+  "<prompt>"
+```
+
+**Codex:**
+```sh
+codex exec \
+  --json \
+  [--resume <session_id>] \
+  [extra_flags...] \
+  "<prompt>"
+```
+
+- All backends emit JSONL (one JSON object per line) on stdout, though with slightly different field names.
+- Each backend's parser (`claude/parser.go`, `opencode/parser.go`, `codex/parser.go`) converts the JSONL to a unified `[]agent.Event` stream.
 - `exec.CommandContext` guarantees SIGKILL when the context is cancelled (timeout or `/cancel`).
 - stderr is captured; non-empty stderr is appended to the error message surfaced to the user.
 - Scanner buffer is 4 MB to handle large tool outputs without truncation at the parser layer.

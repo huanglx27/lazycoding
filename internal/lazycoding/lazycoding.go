@@ -339,7 +339,7 @@ func (lc *Lazycoding) handleMessage(ctx context.Context, ev channel.InboundEvent
 // toolEntry tracks one tool invocation and its output.
 type toolEntry struct {
 	id     string // tool_use_id for correlation
-	line   string // formatted label, e.g. "🔧 <i>Bash:</i> <code>go build</code>"
+	line   string // formatted label, e.g. "⏺ Bash(<code>go build</code>)"
 	output string // truncated tool result; empty = not yet received
 }
 
@@ -412,7 +412,7 @@ func (lc *Lazycoding) consumeStream(
 			sb.WriteString("\n")
 			if t.output != "" {
 				sb.WriteString("<pre><code>")
-				sb.WriteString(tgrender.EscapeHTML(t.output))
+				sb.WriteString(tgrender.EscapeHTML(prefixToolOutput(t.output)))
 				sb.WriteString("</code></pre>\n")
 			}
 		}
@@ -468,9 +468,9 @@ func (lc *Lazycoding) consumeStream(
 			}
 
 		case agent.EventKindToolUse:
-			label := fmt.Sprintf("🔧 <i>%s</i>", tgrender.EscapeHTML(agEv.ToolName))
+			label := fmt.Sprintf("⏺ %s", tgrender.EscapeHTML(agEv.ToolName))
 			if summary := formatToolInput(agEv.ToolName, agEv.ToolInput, lc.cfg.WorkDirFor(ev.ConversationID)); summary != "" {
-				label = fmt.Sprintf("🔧 <i>%s:</i> <code>%s</code>",
+				label = fmt.Sprintf("⏺ %s(<code>%s</code>)",
 					tgrender.EscapeHTML(agEv.ToolName), tgrender.EscapeHTML(summary))
 			}
 			entry := toolEntry{id: agEv.ToolUseID, line: label}
@@ -513,7 +513,7 @@ func (lc *Lazycoding) consumeStream(
 					toolLog.WriteString("\n")
 					if t.output != "" {
 						toolLog.WriteString("<pre><code>")
-						toolLog.WriteString(tgrender.EscapeHTML(t.output))
+						toolLog.WriteString(tgrender.EscapeHTML(prefixToolOutput(t.output)))
 						toolLog.WriteString("</code></pre>\n")
 					}
 				}
@@ -623,6 +623,22 @@ func detectQuickReplies(text string) []channel.KeyboardButton {
 		}
 	}
 	return nil
+}
+
+// prefixToolOutput adds a CLI-style ⎿ prefix to the first output line and
+// aligns continuation lines, matching the Claude Code terminal display style.
+func prefixToolOutput(s string) string {
+	if s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	lines[0] = "⎿  " + lines[0]
+	for i := 1; i < len(lines); i++ {
+		if lines[i] != "" {
+			lines[i] = "   " + lines[i]
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // truncateOutput keeps tool output short enough for a chat message.
