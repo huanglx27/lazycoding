@@ -111,8 +111,8 @@ func convLogToolResult(result string) {
 		return
 	}
 	trimmed := strings.TrimSpace(result)
-	const maxLines = 50
-	const maxChars = 2000
+	const maxLines = 20
+	const maxChars = 1000
 
 	lines := strings.Split(trimmed, "\n")
 	truncated := false
@@ -193,8 +193,8 @@ func formatToolInput(toolName, input, workDir string) string {
 
 	case "Bash":
 		cmd := getString("command")
-		if len(cmd) > 2000 {
-			cmd = cmd[:1997] + "…"
+		if len(cmd) > 1000 {
+			cmd = cmd[:997] + "…"
 		}
 		return cmd
 
@@ -273,8 +273,8 @@ func convLogSend(text string) {
 	arrow := color(ansiBold+ansiGreen, "◀")
 	label := color(ansiBold, "CLAUDE")
 	trimmed := strings.TrimSpace(text)
-	if len(trimmed) > 2000 {
-		trimmed = trimmed[:1997] + "…"
+	if len(trimmed) > 1000 {
+		trimmed = trimmed[:997] + "…"
 	}
 	fmt.Fprintf(os.Stderr, "%s %s %s\n%s\n",
 		ts(), arrow, label, indent(trimmed))
