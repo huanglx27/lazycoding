@@ -575,6 +575,8 @@ func (lc *Lazycoding) consumeStream(
 			existing.TotalCostUSD += newUsage.TotalCostUSD
 			existing.TotalInputTokens += newUsage.InputTokens + newUsage.CacheReadInputTokens + newUsage.CacheCreationInputTokens
 			existing.TotalOutputTokens += newUsage.OutputTokens
+			// Track last-turn total context size for /context display.
+			existing.LastContextTokens = newUsage.InputTokens + newUsage.CacheReadInputTokens + newUsage.CacheCreationInputTokens
 		}
 		lc.store.Set(sk, existing)
 	}
@@ -710,19 +712,72 @@ func (lc *Lazycoding) handleCommand(ctx context.Context, ev channel.InboundEvent
 					"<i>Use /model to confirm, /reset to clear the model override along with session history.</i>")
 		}
 
-	case "cost":
+	case "cost", "usage":
 		sess, ok := lc.store.Get(lc.sessionKey(convID))
 		if !ok || (sess.TotalCostUSD == 0 && sess.TotalInputTokens == 0) {
 			lc.ch.SendText(ctx, convID, "No usage data yet for this session.") //nolint:errcheck
 		} else {
 			msg := fmt.Sprintf(
 				"<b>Session usage</b>\n"+
-					"Input tokens:  <code>%d</code>\n"+
-					"Output tokens: <code>%d</code>\n"+
+					"Input tokens:  <code>%s</code>\n"+
+					"Output tokens: <code>%s</code>\n"+
 					"Total cost:    <code>$%.5f</code>",
-				sess.TotalInputTokens, sess.TotalOutputTokens, sess.TotalCostUSD)
+				formatTokens(sess.TotalInputTokens), formatTokens(sess.TotalOutputTokens), sess.TotalCostUSD)
 			lc.ch.SendText(ctx, convID, msg) //nolint:errcheck
 		}
+
+	case "context":
+		const maxCtx = 200_000
+		sess, ok := lc.store.Get(lc.sessionKey(convID))
+		if !ok || sess.LastContextTokens == 0 {
+			lc.ch.SendText(ctx, convID, "No context data yet — send a message first.") //nolint:errcheck
+			return
+		}
+		used := sess.LastContextTokens
+		pct := float64(used) * 100.0 / float64(maxCtx)
+		const barLen = 30
+		filled := int(float64(barLen) * float64(used) / float64(maxCtx))
+		if filled > barLen {
+			filled = barLen
+		}
+		bar := strings.Repeat("█", filled) + strings.Repeat("░", barLen-filled)
+		model := lc.effectiveModel(convID, sess)
+		msg := fmt.Sprintf(
+			"<b>Context window</b>  ·  %s\n"+
+				"<code>[%s]</code> <b>%.1f%%</b>\n"+
+				"%s / 200k tokens used",
+			tgrender.EscapeHTML(model), bar, pct, formatTokens(used))
+		lc.ch.SendText(ctx, convID, msg) //nolint:errcheck
+
+	case "config":
+		workDir := lc.cfg.WorkDirFor(convID)
+		if workDir == "" {
+			workDir = "(launch directory)"
+		}
+		sess, _ := lc.store.Get(lc.sessionKey(convID))
+		model := lc.effectiveModel(convID, sess)
+		sessID := sess.ClaudeSessionID
+		if sessID == "" {
+			sessID = "(none)"
+		}
+		flags := lc.cfg.ExtraFlagsFor(convID)
+		flagStr := "(none)"
+		if len(flags) > 0 {
+			flagStr = strings.Join(flags, " ")
+		}
+		msg := fmt.Sprintf(
+			"<b>Configuration</b>\n"+
+				"Work dir:    <code>%s</code>\n"+
+				"Model:       <code>%s</code>\n"+
+				"Session ID:  <code>%s</code>\n"+
+				"Timeout:     <code>%ds</code>\n"+
+				"Extra flags: <code>%s</code>",
+			tgrender.EscapeHTML(workDir),
+			tgrender.EscapeHTML(model),
+			tgrender.EscapeHTML(sessID),
+			lc.cfg.Claude.TimeoutSec,
+			tgrender.EscapeHTML(flagStr))
+		lc.ch.SendText(ctx, convID, msg) //nolint:errcheck
 
 	case "cancel":
 		if lc.cancelConversation(convID) {
@@ -801,7 +856,9 @@ func (lc *Lazycoding) handleCommand(ctx context.Context, ev channel.InboundEvent
 			"/session             – show current Claude session ID\n" +
 			"/resume &lt;id&gt;   – resume a specific Claude session by ID\n" +
 			"/model [name]        – show or switch the Claude model\n" +
-			"/cost                – show token usage and estimated cost\n\n" +
+			"/usage               – show token usage and estimated cost\n" +
+			"/context             – show context window utilisation\n" +
+			"/config              – show current effective configuration\n\n" +
 			"<b>Filesystem commands:</b>\n" +
 			"/ls [path]           – list directory contents\n" +
 			"/tree [path]         – show directory tree (depth 3)\n" +
@@ -1087,6 +1144,18 @@ func (lc *Lazycoding) handleCat(ctx context.Context, ev channel.InboundEvent) {
 	}
 
 	lc.ch.SendText(ctx, convID, msg) //nolint:errcheck
+}
+
+// formatTokens converts a token count to a compact human-readable string.
+func formatTokens(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }
 
 // formatFileSize converts byte count to a short human-readable string.
