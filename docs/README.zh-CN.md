@@ -112,7 +112,7 @@ cp config.example.yaml config.yaml
 # （如果使用其他后端，对应填写 opencode.work_dir 或 codex.work_dir）
 
 # 3. 启动
-./lazycoding config.yaml
+./lazycoding config.yaml          # 或：make run
 
 # 4. 打开 Telegram，向 bot 发一条消息 —— Agent 开始工作
 ```
@@ -136,6 +136,7 @@ make release
 
 ```
 make build          为当前平台编译
+make run            编译并用 config.yaml 运行
 make build-whisper  含 CGo whisper 语音识别
 make test           运行测试
 make release        交叉编译：linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64
@@ -240,6 +241,8 @@ channels.<chat_id>.work_dir  →  claude.work_dir  →  bot 启动目录
 
 ```bash
 ./lazycoding config.yaml
+# 或者
+make run
 ```
 
 推荐后台持久运行：

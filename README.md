@@ -112,7 +112,7 @@ cp config.example.yaml config.yaml
 # (or opencode.work_dir / codex.work_dir if using a different backend)
 
 # 3. Run
-./lazycoding config.yaml
+./lazycoding config.yaml          # or: make run
 
 # 4. Open Telegram, send your bot a message — the agent starts working
 ```
@@ -136,6 +136,7 @@ Available `make` targets:
 
 ```
 make build          build for current platform
+make run            build and run with config.yaml
 make build-whisper  build with CGo whisper voice recognition
 make test           run tests
 make release        cross-compile: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64
@@ -233,6 +234,8 @@ Unmapped conversations fall back to `claude.work_dir`.
 
 ```bash
 ./lazycoding config.yaml
+# or
+make run
 ```
 
 For persistent background operation:
