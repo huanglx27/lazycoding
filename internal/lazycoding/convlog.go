@@ -58,8 +58,12 @@ func toolColor(toolName string) string {
 		return ansiYellow
 	case "Agent":
 		return ansiCyan
-	case "opencode", "codex":
+	case "claude":
+		return ansiCyan
+	case "opencode":
 		return ansiBrightGreen
+	case "codex":
+		return ansiMagenta
 	default:
 		return ansiYellow
 	}
