@@ -145,6 +145,27 @@ make clean          remove build artefacts
 
 ---
 
+## Project structure
+
+```
+cmd/lazycoding/         main binary
+pkg/                    public packages (importable by external code)
+  agent/                Agent interface + event types (implement custom backends)
+  channel/              Channel interface + InboundEvent types + NewMultiAdapter
+  config/               Config struct + Load() — drives the whole system
+  session/              Store interface + Session + MemoryStore / FileStore
+  transcribe/           Transcriber interface + all Config types
+internal/               private implementation details
+  agent/claude|codex|opencode/   CLI runner implementations
+  channel/telegram|feishu|…/     chat-platform adapters
+  transcribe/           concrete speech-to-text backends (groq, whisper-*)
+  lazycoding/           core orchestration (Lazycoding struct)
+```
+
+External projects that want to build on lazycoding (e.g. a custom channel adapter or a new AI backend) should import from `pkg/`; the `internal/` packages are not part of the public API.
+
+---
+
 ## Step 1 – Create a Telegram bot
 
 1. Open Telegram → search **@BotFather** → send `/newbot`

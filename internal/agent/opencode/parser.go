@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/bishenghua/lazycoding/internal/agent"
+	"github.com/bishenghua/lazycoding/pkg/agent"
 )
 
 // rawEvent is the top-level envelope for opencode's --format json JSONL output.

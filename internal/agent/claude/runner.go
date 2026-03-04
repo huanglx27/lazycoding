@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os/exec"
 
-	"github.com/bishenghua/lazycoding/internal/agent"
-	"github.com/bishenghua/lazycoding/internal/config"
+	"github.com/bishenghua/lazycoding/pkg/agent"
+	"github.com/bishenghua/lazycoding/pkg/config"
 )
 
 // Runner implements agent.Agent using the local claude CLI.

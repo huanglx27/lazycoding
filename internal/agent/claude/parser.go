@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bishenghua/lazycoding/internal/agent"
+	"github.com/bishenghua/lazycoding/pkg/agent"
 )
 
 // rawLine is the top-level structure of a stream-json line.

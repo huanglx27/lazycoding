@@ -11,11 +11,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/bishenghua/lazycoding/internal/agent"
-	"github.com/bishenghua/lazycoding/internal/channel"
+	"github.com/bishenghua/lazycoding/pkg/agent"
+	"github.com/bishenghua/lazycoding/pkg/channel"
 	tgrender "github.com/bishenghua/lazycoding/internal/channel/telegram"
-	"github.com/bishenghua/lazycoding/internal/config"
-	"github.com/bishenghua/lazycoding/internal/session"
+	"github.com/bishenghua/lazycoding/pkg/config"
+	"github.com/bishenghua/lazycoding/pkg/session"
 )
 
 // discoverLocalSession returns the most recently modified Claude session ID for

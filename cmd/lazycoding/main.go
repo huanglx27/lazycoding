@@ -8,19 +8,19 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/bishenghua/lazycoding/internal/agent"
+	"github.com/bishenghua/lazycoding/pkg/agent"
 	"github.com/bishenghua/lazycoding/internal/agent/claude"
 	"github.com/bishenghua/lazycoding/internal/agent/codex"
 	"github.com/bishenghua/lazycoding/internal/agent/opencode"
-	"github.com/bishenghua/lazycoding/internal/channel"
+	"github.com/bishenghua/lazycoding/pkg/channel"
 	dtadapter "github.com/bishenghua/lazycoding/internal/channel/dingtalk"
 	fsadapter "github.com/bishenghua/lazycoding/internal/channel/feishu"
 	qqadapter "github.com/bishenghua/lazycoding/internal/channel/qqbot"
 	tgadapter "github.com/bishenghua/lazycoding/internal/channel/telegram"
 	wwadapter "github.com/bishenghua/lazycoding/internal/channel/wework"
-	"github.com/bishenghua/lazycoding/internal/config"
+	"github.com/bishenghua/lazycoding/pkg/config"
 	"github.com/bishenghua/lazycoding/internal/lazycoding"
-	"github.com/bishenghua/lazycoding/internal/session"
+	"github.com/bishenghua/lazycoding/pkg/session"
 	"github.com/bishenghua/lazycoding/internal/transcribe"
 )
 

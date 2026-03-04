@@ -7,7 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/bishenghua/lazycoding/internal/transcribe"
+	"github.com/bishenghua/lazycoding/pkg/transcribe"
 )
 
 // Config is the root configuration structure.
@@ -47,10 +47,10 @@ type CodexConfig struct {
 type FeishuConfig struct {
 	AppID       string `yaml:"app_id"`
 	AppSecret   string `yaml:"app_secret"`
-	EncryptKey  string `yaml:"encrypt_key"`   // optional AES event encryption key
-	UseWebhook  bool   `yaml:"use_webhook"`   // true = HTTP webhook mode (needs public IP); default false = WebSocket long connection
-	WebhookPath string `yaml:"webhook_path"`  // HTTP path, default "/feishu" (webhook mode only)
-	ListenAddr  string `yaml:"listen_addr"`   // e.g. ":8080" (webhook mode only)
+	EncryptKey  string `yaml:"encrypt_key"`  // optional AES event encryption key
+	UseWebhook  bool   `yaml:"use_webhook"`  // true = HTTP webhook mode (needs public IP); default false = WebSocket long connection
+	WebhookPath string `yaml:"webhook_path"` // HTTP path, default "/feishu" (webhook mode only)
+	ListenAddr  string `yaml:"listen_addr"`  // e.g. ":8080" (webhook mode only)
 }
 
 // QQBotConfig holds QQ group bot settings.
@@ -70,13 +70,13 @@ type DingTalkConfig struct {
 // WeWorkConfig holds WeCom (企业微信) webhook bot settings.
 // Webhook mode requires a public IP or reverse proxy.
 type WeWorkConfig struct {
-	CorpID         string `yaml:"corp_id"`          // Enterprise CorpID
-	AgentID        int    `yaml:"agent_id"`          // App Agent ID
-	AgentSecret    string `yaml:"agent_secret"`      // App Agent Secret
-	Token          string `yaml:"token"`             // Webhook token for signature verification
-	EncodingAESKey string `yaml:"encoding_aes_key"`  // 43-char base64 AES key for decryption
-	WebhookPath    string `yaml:"webhook_path"`      // HTTP path, default "/wework"
-	ListenAddr     string `yaml:"listen_addr"`       // e.g. ":8081"
+	CorpID         string `yaml:"corp_id"`         // Enterprise CorpID
+	AgentID        int    `yaml:"agent_id"`         // App Agent ID
+	AgentSecret    string `yaml:"agent_secret"`     // App Agent Secret
+	Token          string `yaml:"token"`            // Webhook token for signature verification
+	EncodingAESKey string `yaml:"encoding_aes_key"` // 43-char base64 AES key for decryption
+	WebhookPath    string `yaml:"webhook_path"`     // HTTP path, default "/wework"
+	ListenAddr     string `yaml:"listen_addr"`      // e.g. ":8081"
 }
 
 // TelegramConfig holds Telegram-specific settings.

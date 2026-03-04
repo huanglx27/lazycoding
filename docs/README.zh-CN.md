@@ -145,6 +145,27 @@ make clean          清理产物
 
 ---
 
+## 项目结构
+
+```
+cmd/lazycoding/         主程序入口
+pkg/                    公共包（可被外部项目导入）
+  agent/                Agent 接口 + 事件类型（用于实现自定义后端）
+  channel/              Channel 接口 + InboundEvent 类型 + NewMultiAdapter
+  config/               Config 结构体 + Load()——驱动整个系统
+  session/              Store 接口 + Session + MemoryStore / FileStore
+  transcribe/           Transcriber 接口 + 所有配置类型
+internal/               私有实现细节
+  agent/claude|codex|opencode/   各 CLI 后端的 runner 实现
+  channel/telegram|feishu|…/     各聊天平台的适配器
+  transcribe/           具体的语音识别后端（groq、whisper-* 等）
+  lazycoding/           核心编排逻辑（Lazycoding struct）
+```
+
+希望在 lazycoding 基础上扩展（例如自定义频道适配器或新的 AI 后端）的外部项目，应从 `pkg/` 导入；`internal/` 中的包不属于公共 API。
+
+---
+
 ## 第一步：创建 Telegram Bot
 
 1. 打开 Telegram，搜索 **@BotFather**，发送 `/newbot`

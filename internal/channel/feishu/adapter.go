@@ -24,9 +24,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bishenghua/lazycoding/internal/channel"
-	"github.com/bishenghua/lazycoding/internal/config"
-	"github.com/bishenghua/lazycoding/internal/transcribe"
+	"github.com/bishenghua/lazycoding/pkg/channel"
+	"github.com/bishenghua/lazycoding/pkg/config"
+	"github.com/bishenghua/lazycoding/pkg/transcribe"
 )
 
 const feishuBase = "https://open.feishu.cn/open-apis"
