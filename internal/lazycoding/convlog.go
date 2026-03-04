@@ -283,9 +283,43 @@ func formatToolInput(toolName, input, workDir string) string {
 
 	// Claude Code built-in tools
 	switch toolName {
-	case "Read", "Write", "Edit", "MultiEdit", "NotebookRead", "NotebookEdit":
+	case "Read", "NotebookRead":
 		p := getString("file_path", "notebook_path", "path")
 		return shortenPath(p, workDir)
+
+	case "Write", "NotebookEdit":
+		p := getString("file_path", "notebook_path", "path")
+		path := shortenPath(p, workDir)
+		content := getString("content", "source", "new_source")
+		if content != "" {
+			lines := strings.Count(content, "\n") + 1
+			return fmt.Sprintf("%s  (%d lines)", path, lines)
+		}
+		return path
+
+	case "Edit":
+		p := getString("file_path", "path")
+		path := shortenPath(p, workDir)
+		old := getString("old_string")
+		new := getString("new_string")
+		if old != "" || new != "" {
+			removed := lineCount(old)
+			added := lineCount(new)
+			return fmt.Sprintf("%s  (-%d/+%d)", path, removed, added)
+		}
+		return path
+
+	case "MultiEdit":
+		p := getString("file_path", "path")
+		path := shortenPath(p, workDir)
+		raw, ok := m["edits"]
+		if ok {
+			var edits []any
+			if json.Unmarshal(raw, &edits) == nil && len(edits) > 0 {
+				return fmt.Sprintf("%s  (%d edits)", path, len(edits))
+			}
+		}
+		return path
 
 	case "LS":
 		p := getString("path")
@@ -416,6 +450,14 @@ func truncStr(s string, max int) string {
 		return s
 	}
 	return s[:max-1] + "…"
+}
+
+// lineCount returns the number of lines in s (empty string = 0).
+func lineCount(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
 }
 
 // convLogSend logs the final Claude response.
