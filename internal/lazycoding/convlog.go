@@ -15,19 +15,18 @@ import (
 // ANSI colors are used when stderr is connected to a terminal.
 
 const (
-	ansiReset  = "\033[0m"
-	ansiBold   = "\033[1m"
-	ansiGray   = "\033[90m"
-	ansiCyan   = "\033[36m"
-	ansiGreen  = "\033[32m"
-	ansiYellow = "\033[33m"
-	ansiRed    = "\033[31m"
-	ansiBlue   = "\033[34m"
-	ansiMagenta = "\033[35m"
-	ansiBrightCyan = "\033[96m"
+	ansiReset       = "\033[0m"
+	ansiBold        = "\033[1m"
+	ansiGray        = "\033[90m"
+	ansiCyan        = "\033[36m"
+	ansiGreen       = "\033[32m"
+	ansiYellow      = "\033[33m"
+	ansiRed         = "\033[31m"
+	ansiBlue        = "\033[34m"
+	ansiMagenta     = "\033[35m"
+	ansiBrightCyan  = "\033[96m"
 	ansiBrightGreen = "\033[92m"
-	ansiWhite  = "\033[37m"
-	ansiBrightWhite = "\033[97m"
+	ansiWhite       = "\033[37m"
 )
 
 // useColor is set once at startup: true if stderr is a terminal.
@@ -43,7 +42,7 @@ func color(code, s string) string {
 	return code + s + ansiReset
 }
 
-// toolColor returns the appropriate ANSI color code for a given tool name.
+// toolColor returns the ANSI color for a tool name.
 func toolColor(toolName string) string {
 	switch toolName {
 	case "Bash":
@@ -56,17 +55,13 @@ func toolColor(toolName string) string {
 		return ansiBrightGreen
 	case "AskUserQuestion", "TodoWrite":
 		return ansiYellow
-	case "Agent":
-		return ansiCyan
-	case "claude":
+	case "Agent", "claude":
 		return ansiCyan
 	case "opencode":
 		return ansiBrightGreen
 	case "codex":
 		return ansiMagenta
-	case "general-purpose":
-		return ansiCyan
-	case "Explore":
+	case "general-purpose", "Explore":
 		return ansiBrightGreen
 	case "Plan":
 		return ansiMagenta
@@ -115,11 +110,10 @@ func convLogRecv(convID, userKey, text string) {
 		ts(), arrow, meta, indent(text))
 }
 
-// convLogTool logs a tool invocation with a human-readable summary.
-// Multi-line summaries (e.g. heredoc Bash commands) are printed with
-// continuation lines indented to align below the first summary line.
+// convLogTool logs a tool invocation in Claude Code CLI style:
+//
+//	HH:MM:SS  ⏺ ToolName(summary)
 func convLogTool(name, input, workDir string) {
-	// Determine display name and color
 	displayName := name
 	colorName := name
 	if name == "Agent" {
@@ -130,27 +124,41 @@ func convLogTool(name, input, workDir string) {
 		}
 	}
 
-	label := color(toolColor(colorName)+ansiBold, "🔧 "+displayName+":")
 	summary := formatToolInput(name, input, workDir)
+	bullet := color(toolColor(colorName), "⏺")
+	label := color(toolColor(colorName)+ansiBold, displayName)
+
 	if summary == "" {
-		fmt.Fprintf(os.Stderr, "%s ┌─ %s\n", ts(), label)
+		fmt.Fprintf(os.Stderr, "%s  %s %s\n", ts(), bullet, label)
 		return
 	}
+
 	lines := strings.Split(strings.TrimRight(summary, "\n"), "\n")
 	if len(lines) == 1 {
-		// Single line: show on same line after label
-		fmt.Fprintf(os.Stderr, "%s ┌─ %s %s\n", ts(), label, color(ansiGray, lines[0]))
+		// Single-line: ⏺ ToolName(args)
+		fmt.Fprintf(os.Stderr, "%s  %s %s(%s)\n",
+			ts(), bullet, label, color(ansiGray, lines[0]))
 	} else {
-		// Multi-line: show label alone, then each line on its own line with pipe
-		fmt.Fprintf(os.Stderr, "%s ┌─ %s\n", ts(), label)
-		for _, line := range lines {
-			fmt.Fprintf(os.Stderr, "   │   %s\n", color(ansiGray, line))
+		// Multi-line (e.g. heredoc): show first line inline, rest indented
+		// "15:04:07  ⏺ Bash(first line" — 8+2+2+1+len(name)+1 = varies
+		// Use a fixed continuation indent of 13 spaces to keep it readable.
+		const contIndent = "             "
+		fmt.Fprintf(os.Stderr, "%s  %s %s(%s\n",
+			ts(), bullet, label, color(ansiGray, lines[0]))
+		for i, line := range lines[1:] {
+			if i == len(lines)-2 {
+				fmt.Fprintf(os.Stderr, "%s%s)\n", contIndent, color(ansiGray, line))
+			} else {
+				fmt.Fprintf(os.Stderr, "%s%s\n", contIndent, color(ansiGray, line))
+			}
 		}
 	}
 }
 
-// convLogToolResult logs the output returned by a tool invocation,
-// using the same ⎿ prefix style as the Claude Code terminal UI.
+// convLogToolResult logs tool output in Claude Code CLI style:
+//
+//	          ⎿  output line 1
+//	             output line 2
 func convLogToolResult(result string) {
 	if result == "" {
 		return
@@ -177,11 +185,13 @@ func convLogToolResult(result string) {
 		out += "\n…"
 	}
 
+	// Align ⎿ at the same column as ⏺ (timestamp=8 + 2 spaces = 10).
+	const prefix = "          " // 10 spaces
 	outLines := strings.Split(out, "\n")
-	// Align with the tool invocation line (timestamp width + space)
-	fmt.Fprintf(os.Stderr, "         └─ %s\n", color(ansiGray, "⎿  "+outLines[0]))
+	fmt.Fprintf(os.Stderr, "%s%s  %s\n",
+		prefix, color(ansiGray, "⎿"), color(ansiGray, outLines[0]))
 	for _, line := range outLines[1:] {
-		fmt.Fprintf(os.Stderr, "               %s\n", color(ansiGray, line))
+		fmt.Fprintf(os.Stderr, "%s   %s\n", prefix, color(ansiGray, line))
 	}
 }
 
@@ -323,7 +333,7 @@ func formatToolInput(toolName, input, workDir string) string {
 		if ok {
 			var todos []any
 			if err := json.Unmarshal(raw, &todos); err == nil {
-				return fmt.Sprintf("(%d todos)", len(todos))
+				return fmt.Sprintf("%d todos", len(todos))
 			}
 		}
 	}
