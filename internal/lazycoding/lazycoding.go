@@ -361,16 +361,23 @@ func applyModelToFlags(flags []string, model string) []string {
 // session override first, then the config extra_flags, then returning a
 // placeholder string.
 func (lc *Lazycoding) effectiveModel(convID string, sess session.Session) string {
+	m, _ := lc.effectiveModelInfo(convID, sess)
+	return m
+}
+
+// effectiveModelInfo returns the effective model and its source:
+// "session override", "config", or "backend default".
+func (lc *Lazycoding) effectiveModelInfo(convID string, sess session.Session) (model, source string) {
 	if sess.ModelOverride != "" {
-		return sess.ModelOverride
+		return sess.ModelOverride, "session override"
 	}
 	flags := lc.cfg.ExtraFlagsFor(convID)
 	for i := 0; i+1 < len(flags); i++ {
 		if flags[i] == "--model" {
-			return flags[i+1]
+			return flags[i+1], "config"
 		}
 	}
-	return "(Claude default)"
+	return "", "backend default"
 }
 
 // isThinkingSignatureError reports whether err is the "Invalid 'signature' in
@@ -735,16 +742,47 @@ func (lc *Lazycoding) handleCommand(ctx context.Context, ev channel.InboundEvent
 	case "model":
 		sessKey := lc.sessionKey(convID)
 		existing, _ := lc.store.Get(sessKey)
-		if ev.CommandArgs == "" {
-			model := lc.effectiveModel(convID, existing)
-			lc.ch.SendText(ctx, convID, "Current model: <code>"+tgrender.EscapeHTML(model)+"</code>") //nolint:errcheck
-		} else {
-			newModel := strings.TrimSpace(ev.CommandArgs)
-			existing.ModelOverride = newModel
+		arg := strings.TrimSpace(ev.CommandArgs)
+		switch arg {
+		case "":
+			backend := lc.cfg.Agent.Backend
+			if backend == "" {
+				backend = "claude"
+			}
+			model, source := lc.effectiveModelInfo(convID, existing)
+			modelDisplay := model
+			if modelDisplay == "" {
+				modelDisplay = "(backend default)"
+			}
+			msg := "<b>Model info</b>\n" +
+				"Backend: <code>" + tgrender.EscapeHTML(backend) + "</code>\n" +
+				"Model:   <code>" + tgrender.EscapeHTML(modelDisplay) + "</code>"
+			switch source {
+			case "session override":
+				msg += "\nSource:  session override — <i>/model clear</i> to unset"
+			case "config":
+				msg += "\nSource:  config (extra_flags)"
+			default:
+				msg += "\nSource:  " + source
+			}
+			lc.ch.SendText(ctx, convID, msg) //nolint:errcheck
+		case "clear", "reset":
+			if existing.ModelOverride == "" {
+				lc.ch.SendText(ctx, convID, "No session model override is set.") //nolint:errcheck
+			} else {
+				cleared := existing.ModelOverride
+				existing.ModelOverride = ""
+				lc.store.Set(sessKey, existing)
+				lc.ch.SendText(ctx, convID, //nolint:errcheck
+					"Model override <code>"+tgrender.EscapeHTML(cleared)+"</code> cleared.\n"+
+						"<i>Will use the config / backend default from next message.</i>")
+			}
+		default:
+			existing.ModelOverride = arg
 			lc.store.Set(sessKey, existing)
 			lc.ch.SendText(ctx, convID, //nolint:errcheck
-				"Model set to <code>"+tgrender.EscapeHTML(newModel)+"</code>. Takes effect on next message.\n"+
-					"<i>Use /model to confirm, /reset to clear the model override along with session history.</i>")
+				"Model set to <code>"+tgrender.EscapeHTML(arg)+"</code>. Takes effect on next message.\n"+
+					"<i>/model to confirm · /model clear to unset · /reset to clear with session history</i>")
 		}
 
 	case "cost", "usage":
@@ -837,7 +875,7 @@ func (lc *Lazycoding) handleCommand(ctx context.Context, ev channel.InboundEvent
 			"/compact [hint]      – compress session context\n" +
 			"/session             – show current Claude session ID\n" +
 			"/resume &lt;id&gt;   – resume a specific Claude session by ID\n" +
-			"/model [name]        – show or switch the Claude model\n" +
+			"/model [name|clear]  – show model info, set, or clear the model override\n" +
 			"/usage               – show token usage and estimated cost\n\n" +
 			"<b>Filesystem commands:</b>\n" +
 			"/ls [path]           – list directory contents\n" +
